@@ -1,6 +1,7 @@
-# TMX - A modern task runner
+# TMX — A modern task runner
 
-A flexible task runner than can run anywhere, and used for any use case where a set of predefined steps need to be executed. Potential use cases include:
+A flexible task runner that can run anywhere, for any use case where a set of
+predefined steps need to be executed. Potential use cases include:
 
 - CI/CD
 - Testing
@@ -8,90 +9,257 @@ A flexible task runner than can run anywhere, and used for any use case where a 
 - Configuration
 - Deployment
 
-It can be a replacement for Makefiles, Bash scripts, Github Actions Workflows, and other task runners. It can also work in conjunction with task runners.
+It can be a replacement for Makefiles, Bash scripts, GitHub Actions Workflows, and other
+task runners. It can also work in conjunction with them.
 
-TMX defines Flows and Pipelines. A Flow is a static definition of tasks, context and environment. A Pipeline is the state of a Flow at runtime.
+TMX defines **Flows** and **Pipelines**. A Flow is a static definition of tasks, context
+and environment. A Pipeline is the state of a Flow at runtime.
+
+> **Status: early design phase.** This repository currently contains the draft data model
+> as JSON Schema plus worked examples — no runtime yet. The concrete shapes and decisions
+> below are captured in [`docs/tmx.schema.json`](./docs/tmx.schema.json) and
+> [`docs/tmx-provider.schema.json`](./docs/tmx-provider.schema.json); the rationale and
+> still-open questions live in [`docs/SCHEMA.md`](./docs/SCHEMA.md).
+
+## Concepts
+
+| Term | Meaning |
+| --- | --- |
+| **Flow** | Static definition: `environment?` → `context?` → `tasks` (only `tasks` is required). |
+| **Pipeline** | The live state of a Flow as it runs — a JSON object that each task reads and updates. |
+| **Task** | One step. Consumes the Pipeline state, returns JSON that is merged back in. |
+| **Context** | Env vars, secrets and lifecycle hooks shared by a Flow's tasks. |
+| **Environment** | Declarative description of *where* a Flow runs; materialised by a provider. |
+| **Provider** | Implements an environment (binary or Flow) via standard lifecycle methods. |
+
+## Source formats
+
+A Flow and its artifacts can be authored in **YAML, JSON, JSONC or TOML**. All four parse
+to the same JSON model, so the schema applies regardless of source format. The
+[`docs/examples`](./docs/examples) directory contains the same Flow in all four formats,
+kept semantically identical.
+
+Every artifact may carry an optional **`kind`** discriminator
+(`flow` | `environment` | `context` | `task`, and `provider` for manifests). When present,
+a single validator/loader can dispatch a file to the right schema instead of relying on
+filename convention. It is optional, so a minimal `{ tasks: [...] }` file is still valid.
 
 ## Flows
 
-Flows can be defined in YAML, JSON, JSONC or TOML. They are defined in a heirachy of Environment -> Context -> Tasks. Only the tasks are required for a Flow to run. Environment/Context/Task can be defined within a single task definition file as seperate sections, or as standalone files in folder to be used as default configs with inheritance.
+Flows are defined as a hierarchy of Environment → Context → Tasks. Only the tasks are
+required. Environment, Context and Tasks can be defined within a single file as separate
+sections, **or** as standalone files in a folder used as default configs with inheritance:
 
 ```
-<task_folder>
+<flow_folder>
    |
-   |- environment.[yaml, json, jsonc, toml]  <- defines the environment the task runs in. Not required.
-   |- context.[yaml, json, jsonc, toml]  <- defines the task context (shared env vars, life cycle hooks)
-   |- task-1.[yaml, json, jsonc, toml]  <- task definition. inherits the context and environment from the folder
-   |- task-2.[yaml, json, jsonc, toml]  <- task definition. inherits the context and environment from the folder
+   |- environment.[yaml|json|jsonc|toml]   <- where tasks run. Not required.
+   |- context.[yaml|json|jsonc|toml]       <- shared env vars, secrets, lifecycle hooks.
+   |- task-1.[yaml|json|jsonc|toml]        <- inherits the folder environment + context.
+   |- task-2.[yaml|json|jsonc|toml]
    |- task-3 ...
 ```
 
-In the above folder layout, all the tasks inherit the environment and context definitions from the standalone files. If any of the tasks define their own context, by default it will merge contexts, with task level context overriding folder level context in case of a key collision, or optionally only use the task level context.
+In this layout all tasks inherit the environment and context from the standalone files.
+Where an inline artifact and a `reference` are both allowed, a **reference** is just a
+string — a relative/absolute file path or a registered name (e.g. `./context.yaml` or
+`my-org/base-context`).
 
-At this point in time there is no inheritance of environment or contexts outside of the same folder (ie in a root folder)
+Inheritance is scoped to the **same folder** only; there is no inheritance from a parent
+or root folder.
+
+The smallest useful Flow:
+
+```yaml
+# hello.yaml
+tasks:
+  - name: greet
+    type: execute
+    with:
+      command: echo "hello from TMX"
+```
 
 ### Tasks
 
-The steps a Flow must take to execute. TMX defines a number of built-in tasks, and allows users to define their own tasks.
+Tasks are the steps a Flow executes. TMX defines a number of built-in tasks and lets
+users define their own.
 
-Every single task consumes the Pipeline state as a JSON object, and returns a JSON output. If the output is not valid JSON, the task will insert the output as a string in a 'message' field in a JSON object, or a binary object as a 'blob' field in a JSON object. With each task execution the Pipeline will incrementally be updated with the output of the task, making that output available to subsequent tasks.
+Every task consumes the Pipeline state as a JSON object and returns JSON output. If the
+output is not valid JSON, the runner wraps it: plain text becomes `{ "message": "..." }`
+and binary becomes `{ "blob": <bytes> }`. Each task's output is merged into the Pipeline
+state **under the task's `name`** (`state[name] = output`; override the key with
+`output`), making it available to subsequent tasks.
 
-The built-in tasks include:
+Tasks run **in sequence**, one after another. There is no branching, looping or parallel
+execution — the only control flow is skipping a task via its `if` condition.
 
-- Execute (Execute a shell command)
-- Run (Run a program/script in any language)
-- Fetch (HTTP/HTTPS requests)
-- File (Read/write files)
-- Store (Read/write to S3 compatible storage)
-- Chat Completion (Call an LLM using ChatCompletions API spec)
-- Assert/Expect (Assert values)
+**Common task fields** (the envelope shared by every task):
 
-User defined tasks are implemented as Flows that can be imported as a discrete tasks into a Flow. Currently Flows run in sequence, one task after another. There is no support for branching logic, loops or parallel execution. There is only support to skip a task based on a basic if statement.
+| Field | Description |
+| --- | --- |
+| `type` | **Required.** One of the built-in types below, or `flow`. |
+| `name` | Identifier; also the Pipeline-state key its output is merged under. |
+| `description` | Optional human description. |
+| `if` | Skip condition — a JavaScript-subset expression (truthy/falsy, strict `===`) evaluated against the Pipeline state. |
+| `secrets` | Names of context secrets this task needs **unmasked** (see [Context](#context)). |
+| `context` | Task-level context overrides (inline or reference). |
+| `contextStrategy` | `merge` (default) or `replace` — how task context combines with inherited context. |
+| `contextPrecedence` | `local` (default) or `inherited` — who wins a key collision during `merge`. |
+| `output` | Override the Pipeline-state key for this task's output (defaults to `name`). |
+| `continueOnError` | `false` (default) aborts the Pipeline on failure; `true` records the error and continues. |
+| `with` | Type-specific configuration (shape determined by `type`). |
+
+**Built-in task types** and their `with` configuration:
+
+| `type` | Purpose | Key `with` fields |
+| --- | --- | --- |
+| `execute` | Run a single shell command | `command`*, `args`, `shell`, `cwd`, `env`, `timeout` |
+| `run` | Run a script in a named language | `language` (default `bash`), `script` \| `file`*, `args`, `env`, `cwd`, `timeout` |
+| `fetch` | HTTP/HTTPS request | `url`*, `method`, `headers`, `query`, `body`, `bodyType`, `timeout`, `followRedirects`, `retries` |
+| `file` | Read/write files | `operation`* (read/write/append/delete/copy/move/exists), `path`*, `content`, `encoding`, `destination` |
+| `store` | S3-compatible object storage | `operation`* (get/put/delete/list/head), `bucket`*, `key`, `endpoint`, `region`, `content`, `contentType`, `credentials` |
+| `chat-completion` | Call an LLM (ChatCompletions spec) | `model`*, `messages`*, `baseUrl`, `apiKey`, `temperature`, `maxTokens`, `topP`, `stream`, `tools`, `responseFormat` |
+| `assert` | Assert values | `assertions`* — each `{ actual, operator, expected?, message? }` |
+| `flow` | Import another Flow as a task | `use`* (reference), `input` |
+
+<sub>\* required</sub>
+
+**`execute` vs `run`.** `execute` runs a single shell command line. `run` runs a
+script/program in a named language or interpreter (`python`, `node`, `ruby`, `bash`, …),
+defaulting to `bash`, via either inline `script` or a `file` path.
+
+**Assertions** use a structured operator set: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`,
+`contains`, `matches`, `exists`, `notExists`.
+
+**User-defined tasks** are implemented as Flows imported via the `flow` task type — `use`
+references the Flow and `input` seeds its initial Pipeline state.
 
 ### Context
 
-The Context of a flow is the environment variables and secrets that are available to the tasks in the flow. A context defines lifecycle hooks that are run in Pipeline creation, destruction and on errors.
+The Context is the environment variables and secrets available to a Flow's tasks, plus
+lifecycle hooks. Contexts are reusable and can be defined in isolation for reuse across
+Flows.
 
-The lifecycle hooks include:
+Lifecycle hooks:
 
-- `create` - Hook to run on Pipeline creation
-- `change` - Hook to run every time the Pipeline state changes
-- `destroy` - Hook to run on Pipeline destruction
-- `error` - Handle errors in the Pipeline
+| Hook | Runs |
+| --- | --- |
+| `create` | On Pipeline creation. |
+| `change` | Every time the Pipeline state changes. |
+| `destroy` | On Pipeline destruction. |
+| `error` | To handle errors in the Pipeline. |
 
-The hooks themselves can be a set of tasks defined within the Context, or imported from another Flow. Contexts are reusable and can be defined in isolation to enable them to be reused across multiple Flows.
+A hook body is either a set of tasks defined inline, or a reference to another Flow that
+implements it.
+
+**Secrets are opt-in per task.** All secrets are auto-masked in output everywhere; a task
+receives a secret in clear text only if it lists that secret's name in its `secrets`
+array. A task that names no secrets gets none unmasked. Secret values may be literals,
+`${{ ... }}` interpolations, or a structured source (`env` / `file` / `provider` + `key`).
+
+**Inheritance / merge semantics.** When a task defines its own context it is, by default,
+merged over the inherited folder/Flow context. Merging is **per-section** —
+`env`, `secrets` and `hooks` merge independently at the key level. On a key collision the
+in-file (`local`) value wins by default; set `contextPrecedence: inherited` to let the
+parent value override instead. `contextStrategy: replace` ignores inheritance and uses
+only the task-level context.
 
 ### Environment
 
-The Environment describes the runtime environment that the Flow will run in. It includes the operating system, architecture, and any other relevant information. It is purely declarative and can be defined in YAML, JSON or TOML. Environment definitions are platform specific and can be used to provision resources required to initiate a Pipeline for the Flow. The resource could simply be a Docker container running on your local machine, a Lambda function running on AWS, or a Kubernetes cluster running on GCP.
+The Environment declaratively describes the runtime a Flow runs in. It is not required —
+Flows run without one — but when present it lets a provider provision the resources for a
+Pipeline (a local Docker container, an AWS Lambda, a GCP Kubernetes cluster, …).
+Environments are reusable and can be defined in isolation.
 
-Environment definitions are not required for a Flow to run, but they can be used to provision resources required to initiate a Pipeline for the Flow. Environments are reusable and can be defined in isolation to enable them to be reused across multiple Flows.
+Common fields:
 
-Environments define things like a standard image to use (wether container or machine), platform (ie local or cloud provider), runtime (container vs VM vs microVM vs cloud instance (ec2?)), resource allocation (CPU/memory/storage), bootstrap tasks to run on container init (these follow the Flow schema, and can be a linked Flow file)
+| Field | Description |
+| --- | --- |
+| `os` / `arch` | Operating system / CPU architecture. |
+| `platform` | Target platform: `local` or a cloud provider (`aws`, `gcp`, `azure`, `fly`, …). |
+| `provider` | The Environment Provider that materialises this environment. |
+| `runtime` | `container` \| `vm` \| `microvm` \| `cloud-instance` \| `process`. |
+| `image` | Standard image — a container image ref or a machine/VM image id. |
+| `resources` | `cpu`, `memory`, `storage`, `gpu`. |
+| `bootstrap` | Tasks to run on environment/container init (an inline task list or a Flow reference). |
+| `options` | Provider/platform-specific options (free-form). |
 
-The environment specific options will be unique to each environment provider/platform (ie AWS ECS will have different definitions to AWS EC2, compared to fly.io, compared to Google Cloud Run, etc...)
+Because environment-specific options are unique to each provider/platform (AWS ECS differs
+from AWS EC2, fly.io, Google Cloud Run, …), the Environment object is **open**: unknown
+keys are allowed, and a dedicated `options` block carries provider extensions.
 
-Environments are implemented either via discrete `Environment Providers` which can be one of either
+#### Environment providers
 
-- single standalone binaries which take an environment definition and deploy it.
-- Flow definitions which implement the standard required methods (ie it could be a set of CLI calls to stand up the environment)
+Environments are materialised by **Environment Providers**, each of which is either:
 
-The environment provider binary is invoked by the core TMX cli.
+- a single standalone **binary** that takes an environment definition and deploys it
+  (invoked by the core TMX CLI), or
+- a **Flow** that implements the standard methods (e.g. a set of CLI calls to stand up the
+  environment).
 
-Environment providers need to implement a number of standard methods
+A provider is described by a [provider manifest](./docs/tmx-provider.schema.json)
+(`kind: provider`) declaring its `name`, `type` (`binary` | `flow`), an optional `binary`
+path, an optional `optionsSchema` (so the CLI can validate an environment's `options`
+against the chosen provider), and the four required lifecycle **methods**:
 
-- `bootstrap` - boostrap the environment to enable Flow runs. ie provision network, create clusters, etc...
-- `destroy` - Destroy the entire environment, including all resources created by the boostrap
-- `deploy` - Create the required for a specific or set of Flow runs
-- `clean` - Remove any deployed instances used for Flow runs
+| Method | Responsibility |
+| --- | --- |
+| `bootstrap` | Bootstrap the environment to enable Flow runs (provision network, create clusters, …). |
+| `deploy` | Create what's required for a specific (or set of) Flow runs. |
+| `clean` | Remove deployed instances used for Flow runs. |
+| `destroy` | Destroy the entire environment, including everything created by `bootstrap`. |
 
-## Status
+Each method is a subcommand string (binary providers), a Flow reference, or an inline list
+of TMX tasks. An environment's `provider` field names the manifest to use. See
+[`docs/examples/provider-manifest.yaml`](./docs/examples/provider-manifest.yaml).
 
-Early design phase. Draft schemas for Flows, Contexts and Environments live in
-[`docs/`](./docs) ([`tmx.schema.json`](./docs/tmx.schema.json),
-[`tmx-provider.schema.json`](./docs/tmx-provider.schema.json)) with worked
-[`examples/`](./docs/examples) in JSON/YAML/TOML/JSONC. Run `scripts/validate.sh` to
-validate them.
+## Interpolation
+
+Values may reference secrets and prior Pipeline state via `${{ ... }}` interpolation
+(e.g. `Bearer ${{ secrets.API_KEY }}`, `${{ tasks.build.success }}`). The schema treats
+interpolated values as strings; the expression grammar is evaluated by the engine, not the
+schema.
+
+## Schemas & validation
+
+| Path | What |
+| --- | --- |
+| [`docs/tmx.schema.json`](./docs/tmx.schema.json) | Flow / Task / Context / Environment (JSON Schema Draft 2020-12). |
+| [`docs/tmx-provider.schema.json`](./docs/tmx-provider.schema.json) | Environment provider manifest. |
+| [`docs/SCHEMA.md`](./docs/SCHEMA.md) | Design decisions, interpretations, and open questions. |
+| [`docs/examples/`](./docs/examples) | Worked examples (JSON/YAML/TOML/JSONC) — see its [README](./docs/examples/README.md). |
+
+Validate every schema and example with one script (uses [`uv`](https://docs.astral.sh/uv/)
+when available, otherwise a local venv):
+
+```bash
+scripts/validate.sh                     # meta-schema + all examples + cross-format parity
+scripts/validate.sh path/to/file.yaml   # validate a single file (dispatched by `kind`)
+```
+
+### Version control & pre-push
+
+This repo uses **Jujutsu (jj)**, which does not run Git hooks. So:
+
+- **Pushing with jj:** use [`scripts/push.sh`](./scripts/push.sh) — it validates, then runs
+  `jj git push`.
+- **Plain `git push` / CI:** the `.githooks/pre-push` hook runs the same validation. Enable
+  once with `git config core.hooksPath .githooks`.
+
+## Repository layout
+
+```
+docs/
+  tmx.schema.json            # core schema (Flow/Task/Context/Environment)
+  tmx-provider.schema.json   # provider manifest schema
+  SCHEMA.md                  # design decisions + open questions
+  examples/                  # validated examples in all four formats
+scripts/
+  validate.sh                # validate schemas + examples
+  validate_examples.py       # the validator (kind-dispatch, cross-file $ref, parity)
+  push.sh                    # jj-native "pre-push": validate then jj git push
+.githooks/pre-push           # git pre-push backstop (for `git push` / CI)
+```
 
 ## License
 
