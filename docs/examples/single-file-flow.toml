@@ -1,0 +1,98 @@
+kind = "flow"
+name = "build-and-publish"
+description = "Combined Flow file: environment, context and tasks in one document."
+
+# ---- Environment: where the Pipeline runs ----
+[environment]
+platform = "aws"
+provider = "aws-ecs"
+runtime = "container"
+image = "node:22-alpine"
+
+[environment.resources]
+cpu = "1"
+memory = "2Gi"
+
+[[environment.bootstrap]]
+name = "install"
+type = "execute"
+with = { command = "npm ci" }
+
+# provider-specific, free-form
+[environment.options]
+cluster = "ci-cluster"
+subnets = ["subnet-0a1b2c3d"]
+
+# ---- Context: env, secrets, lifecycle hooks ----
+[context.env]
+NODE_ENV = "production"
+REGISTRY = "ghcr.io/acme"
+
+[context.secrets]
+NPM_TOKEN = { provider = "aws-sm", key = "ci/npm-token" }
+GH_TOKEN = "${{ env.GH_TOKEN }}"
+ANTHROPIC_API_KEY = { provider = "aws-sm", key = "ci/anthropic-key" }
+
+[context.hooks]
+error = "./hooks/on-error.yaml"   # a referenced Flow implements this hook
+
+[[context.hooks.create]]
+name = "notify-start"
+type = "fetch"
+[context.hooks.create.with]
+url = "https://hooks.example.com/start"
+method = "POST"
+body = { flow = "build-and-publish" }
+
+# ---- Tasks: run in order ----
+[[tasks]]
+name = "test"
+type = "execute"
+with = { command = "npm test", timeout = "5m" }
+
+[[tasks]]
+name = "build"
+type = "run"
+[tasks.with]
+language = "bash"
+script = "npm run build && tar czf dist.tgz dist"
+
+[[tasks]]
+name = "upload"
+type = "store"
+if = "${{ tasks.build.success }}"
+[tasks.with]
+operation = "put"
+bucket = "acme-artifacts"
+key = "builds/dist.tgz"
+endpoint = "https://s3.us-east-1.amazonaws.com"
+
+[[tasks]]
+name = "summarize"
+type = "chat-completion"
+secrets = ["ANTHROPIC_API_KEY"]
+[tasks.with]
+model = "claude-opus-4-8"
+apiKey = "${{ secrets.ANTHROPIC_API_KEY }}"
+[[tasks.with.messages]]
+role = "system"
+content = "You summarize CI runs."
+[[tasks.with.messages]]
+role = "user"
+content = "Summarize the build result."
+
+[[tasks]]
+name = "verify"
+type = "assert"
+[[tasks.with.assertions]]
+actual = "${{ tasks.upload.status }}"
+operator = "eq"
+expected = 200
+message = "upload should succeed"
+
+[[tasks]]
+name = "deploy"
+type = "flow"
+[tasks.with]
+use = "../deploy/flow.yaml"
+input = { artifact = "builds/dist.tgz" }

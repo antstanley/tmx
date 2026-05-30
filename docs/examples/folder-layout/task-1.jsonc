@@ -1,0 +1,14 @@
+{
+  // Standalone task-N.* — inherits environment.toml + context.yaml from this folder.
+  "kind": "task",
+  "name": "fetch-config",
+  "type": "fetch",
+  "if": "${{ env.LOG_LEVEL !== 'silent' }}",
+  "secrets": ["API_KEY"], // request API_KEY unmasked so it can be sent in the header
+  "with": {
+    "url": "https://config.example.com/app.json",
+    "method": "GET",
+    "headers": { "Authorization": "Bearer ${{ secrets.API_KEY }}" }
+  },
+  "output": "config"
+}

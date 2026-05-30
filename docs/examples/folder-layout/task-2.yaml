@@ -1,0 +1,13 @@
+# Standalone task-N.* — task-level context is merged over the folder context.
+kind: task
+name: write-report
+type: file
+context:
+  env:
+    LOG_LEVEL: debug   # overrides the folder context for this task
+contextStrategy: merge
+contextPrecedence: local   # local (in-file) value wins on collision; use 'inherited' to flip
+with:
+  operation: write
+  path: .work/report.json
+  content: "${{ config }}"

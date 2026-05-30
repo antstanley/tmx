@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Git pre-push hook: validate TMX schemas + examples before a `git push`.
+#
+# NOTE: Jujutsu does not run Git hooks. This fires only on plain `git push`
+# (and many CI providers). When pushing with jj, use `scripts/push.sh` instead.
+#
+# Enabled via:  git config core.hooksPath .githooks
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+echo "pre-push: validating TMX schemas + examples…"
+if ! "$ROOT/scripts/validate.sh"; then
+  echo "✗ schema validation failed — push aborted." >&2
+  exit 1
+fi
+echo "✓ schema validation passed."

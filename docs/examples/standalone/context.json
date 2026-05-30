@@ -1,0 +1,13 @@
+{
+  "kind": "context",
+  "name": "default",
+  "env": { "LOG_LEVEL": "info" },
+  "secrets": {
+    "API_KEY": { "env": "API_KEY" }
+  },
+  "hooks": {
+    "create": [
+      { "name": "init", "type": "execute", "with": { "command": "mkdir -p .work" } }
+    ]
+  }
+}

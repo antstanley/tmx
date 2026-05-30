@@ -1,0 +1,437 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tmx.dev/schemas/tmx.schema.json",
+  "title": "TMX Flow",
+  "description": "Schema for a TMX Flow document. A Flow is the static definition of an Environment, a Context and a list of Tasks. Only `tasks` is required. Environment and Context may be inlined as objects or referenced by path/name so they can be reused across Flows. Standalone artifact files (environment.*, context.*, task-N.*) validate against the corresponding sub-schemas under `$defs` (`environment`, `context`, `task`). This document targets YAML/JSON/JSONC/TOML sources after they are parsed to a JSON model.",
+  "type": "object",
+  "$ref": "#/$defs/flow",
+
+  "$defs": {
+
+    "flow": {
+      "title": "Flow",
+      "description": "A static definition of tasks, plus optional context and environment. At runtime an instance of a Flow is a Pipeline.",
+      "type": "object",
+      "required": ["tasks"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "flow", "description": "Optional artifact discriminator. When present, a single validator can dispatch a file to the right schema instead of relying on filename convention. Defaults to `flow` for a top-level document." },
+        "name": { "type": "string", "description": "Human-readable name of the Flow." },
+        "description": { "type": "string" },
+        "version": { "type": "string", "description": "Optional version/identifier for this Flow definition." },
+        "environment": {
+          "description": "Runtime environment for the Flow. Inline object, or a string path/name referencing a reusable environment definition. Optional — Flows run without one.",
+          "oneOf": [
+            { "$ref": "#/$defs/environment" },
+            { "$ref": "#/$defs/reference" }
+          ]
+        },
+        "context": {
+          "description": "Context (env vars, secrets, lifecycle hooks) for the Flow. Inline object, or a string path/name referencing a reusable context definition.",
+          "oneOf": [
+            { "$ref": "#/$defs/context" },
+            { "$ref": "#/$defs/reference" }
+          ]
+        },
+        "tasks": { "$ref": "#/$defs/taskList" }
+      }
+    },
+
+    "taskList": {
+      "title": "Task list",
+      "description": "An ordered list of tasks. Tasks run in sequence, one after another. There is no branching, looping or parallel execution; a task may be skipped via its `if` condition.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/task" }
+    },
+
+    "reference": {
+      "title": "Reference",
+      "description": "A string reference to a standalone artifact: a relative/absolute file path or a registered name.",
+      "type": "string",
+      "minLength": 1,
+      "examples": ["./context.yaml", "../shared/environment.toml", "my-org/base-context"]
+    },
+
+    "task": {
+      "title": "Task",
+      "description": "A single step in a Flow. Every task consumes the current Pipeline state (a JSON object) and returns a JSON output that is merged back into the Pipeline state for subsequent tasks. Non-JSON stdout is wrapped as `{ \"message\": \"...\" }`; binary output is wrapped as `{ \"blob\": <bytes> }`.",
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "task", "description": "Optional artifact discriminator for standalone task files (task-N.*). Lets a single validator dispatch by `kind` rather than filename." },
+        "name": { "type": "string", "description": "Identifier for the task. Should be unique within the Flow. Task output is merged into the Pipeline state under this name (`state[name] = output`)." },
+        "description": { "type": "string" },
+        "type": {
+          "description": "The task implementation to run. One of the built-in types, or `flow` to import another Flow as a user-defined task.",
+          "type": "string",
+          "enum": ["execute", "run", "fetch", "file", "store", "chat-completion", "assert", "flow"]
+        },
+        "if": {
+          "type": "string",
+          "description": "Skip condition: a JavaScript-subset expression evaluated against the Pipeline state, using JS truthy/falsy semantics and strict equality (===). When it evaluates falsy, the task is skipped. This is the only supported control flow.",
+          "examples": ["${{ tasks.build.success }}", "${{ env.LOG_LEVEL !== 'silent' }}"]
+        },
+        "secrets": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true,
+          "description": "Names of context secrets this task requires. Secrets are auto-masked in all output by default; only secrets named here are unmasked and made available to this task. A task that names no secrets receives none in clear text."
+        },
+        "context": {
+          "description": "Task-level context overrides. Inline object or a reference. By default merged over the folder/Flow context (`contextStrategy: merge`).",
+          "oneOf": [
+            { "$ref": "#/$defs/context" },
+            { "$ref": "#/$defs/reference" }
+          ]
+        },
+        "contextStrategy": {
+          "description": "How the task-level context combines with the inherited Flow/folder context. `merge` (default) merges each section (`env`, `secrets`, `hooks`) independently at the key level; `replace` uses only the task-level context.",
+          "type": "string",
+          "enum": ["merge", "replace"],
+          "default": "merge"
+        },
+        "contextPrecedence": {
+          "description": "On a key collision during `merge`, which side wins. `local` (default) — the in-file/task value overrides the inherited value; `inherited` — the parent/folder value overrides the local value.",
+          "type": "string",
+          "enum": ["local", "inherited"],
+          "default": "local"
+        },
+        "output": {
+          "type": "string",
+          "description": "Optional override for the Pipeline-state key this task's output is merged under. Defaults to the task `name`."
+        },
+        "continueOnError": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, a failing task does not abort the Pipeline; the error is recorded and the next task runs."
+        },
+        "with": {
+          "description": "Type-specific configuration. The accepted shape is determined by `type` (see the allOf branches)."
+        }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "execute" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/executeWith" } }, "required": ["with"] } },
+        { "if": { "properties": { "type": { "const": "run" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/runWith" } }, "required": ["with"] } },
+        { "if": { "properties": { "type": { "const": "fetch" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/fetchWith" } }, "required": ["with"] } },
+        { "if": { "properties": { "type": { "const": "file" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/fileWith" } }, "required": ["with"] } },
+        { "if": { "properties": { "type": { "const": "store" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/storeWith" } }, "required": ["with"] } },
+        { "if": { "properties": { "type": { "const": "chat-completion" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/chatCompletionWith" } }, "required": ["with"] } },
+        { "if": { "properties": { "type": { "const": "assert" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/assertWith" } }, "required": ["with"] } },
+        { "if": { "properties": { "type": { "const": "flow" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/flowWith" } }, "required": ["with"] } }
+      ]
+    },
+
+    "executeWith": {
+      "title": "Execute task",
+      "description": "Run a shell command.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": { "type": "string", "description": "The command line to execute." },
+        "args": { "type": "array", "items": { "type": "string" }, "description": "Arguments passed to the command. When set, `command` is treated as the executable." },
+        "shell": { "type": "string", "description": "Shell to run the command in, e.g. 'bash', 'sh', 'pwsh'. Implementation default when omitted." },
+        "cwd": { "type": "string", "description": "Working directory." },
+        "env": { "$ref": "#/$defs/envMap" },
+        "timeout": { "$ref": "#/$defs/duration" }
+      }
+    },
+
+    "runWith": {
+      "title": "Run task",
+      "description": "Run a program/script in a named language/interpreter. Provide either inline `script` or a `file` path. Distinct from `execute`, which runs a single shell command line.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "language": { "type": "string", "description": "Interpreter/runtime, e.g. 'python', 'node', 'ruby', 'bash', 'deno'. Defaults to 'bash' when omitted.", "default": "bash", "examples": ["python", "node", "bash"] },
+        "script": { "type": "string", "description": "Inline source to execute." },
+        "file": { "type": "string", "description": "Path to a script file to execute." },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "env": { "$ref": "#/$defs/envMap" },
+        "cwd": { "type": "string" },
+        "timeout": { "$ref": "#/$defs/duration" }
+      },
+      "oneOf": [
+        { "required": ["script"] },
+        { "required": ["file"] }
+      ]
+    },
+
+    "fetchWith": {
+      "title": "Fetch task",
+      "description": "Perform an HTTP/HTTPS request.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": { "type": "string", "description": "Request URL." },
+        "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"], "default": "GET" },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "query": { "type": "object", "description": "Query string parameters.", "additionalProperties": { "type": ["string", "number", "boolean"] } },
+        "body": { "description": "Request body. An object/array is serialised per `bodyType`." },
+        "bodyType": { "type": "string", "enum": ["json", "form", "text", "binary"], "default": "json" },
+        "timeout": { "$ref": "#/$defs/duration" },
+        "followRedirects": { "type": "boolean", "default": true },
+        "retries": { "type": "integer", "minimum": 0, "default": 0 }
+      }
+    },
+
+    "fileWith": {
+      "title": "File task",
+      "description": "Read or write files on the local filesystem.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "path"],
+      "properties": {
+        "operation": { "type": "string", "enum": ["read", "write", "append", "delete", "copy", "move", "exists"] },
+        "path": { "type": "string", "description": "Target file path." },
+        "content": { "type": "string", "description": "Content to write (write/append operations)." },
+        "encoding": { "type": "string", "enum": ["utf-8", "base64", "binary"], "default": "utf-8" },
+        "destination": { "type": "string", "description": "Destination path for copy/move operations." }
+      }
+    },
+
+    "storeWith": {
+      "title": "Store task",
+      "description": "Read from or write to S3-compatible object storage.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "bucket"],
+      "properties": {
+        "operation": { "type": "string", "enum": ["get", "put", "delete", "list", "head"] },
+        "bucket": { "type": "string" },
+        "key": { "type": "string", "description": "Object key. Required for get/put/delete/head; used as a prefix for list." },
+        "endpoint": { "type": "string", "description": "S3-compatible endpoint URL. Omit for AWS S3 defaults." },
+        "region": { "type": "string" },
+        "content": { "type": "string", "description": "Object body for put operations." },
+        "contentType": { "type": "string" },
+        "credentials": {
+          "type": "object",
+          "description": "Access credentials. Values typically reference secrets from the context.",
+          "additionalProperties": true,
+          "properties": {
+            "accessKeyId": { "type": "string" },
+            "secretAccessKey": { "type": "string" },
+            "sessionToken": { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "chatCompletionWith": {
+      "title": "Chat Completion task",
+      "description": "Call an LLM using the ChatCompletions API specification.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["model", "messages"],
+      "properties": {
+        "model": { "type": "string" },
+        "baseUrl": { "type": "string", "description": "API base URL of an OpenAI-compatible endpoint." },
+        "apiKey": { "type": "string", "description": "API key. Typically references a secret from the context." },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/chatMessage" }
+        },
+        "temperature": { "type": "number", "minimum": 0 },
+        "maxTokens": { "type": "integer", "minimum": 1 },
+        "topP": { "type": "number" },
+        "stream": { "type": "boolean", "default": false },
+        "tools": { "type": "array", "items": { "type": "object" } },
+        "responseFormat": { "type": "object", "description": "Structured-output / response-format directive passed through to the API." }
+      }
+    },
+
+    "chatMessage": {
+      "type": "object",
+      "required": ["role", "content"],
+      "additionalProperties": false,
+      "properties": {
+        "role": { "type": "string", "enum": ["system", "user", "assistant", "tool"] },
+        "content": { "type": ["string", "array", "null"], "description": "Message content. String, or an array of content parts for multimodal input." },
+        "name": { "type": "string" }
+      }
+    },
+
+    "assertWith": {
+      "title": "Assert / Expect task",
+      "description": "Assert values from the Pipeline state. The task fails if any assertion does not hold.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assertions"],
+      "properties": {
+        "assertions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/assertion" }
+        }
+      }
+    },
+
+    "assertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actual", "operator"],
+      "properties": {
+        "actual": { "description": "Value or expression (resolved against Pipeline state) to test." },
+        "operator": {
+          "type": "string",
+          "enum": ["eq", "ne", "gt", "gte", "lt", "lte", "contains", "matches", "exists", "notExists"]
+        },
+        "expected": { "description": "Comparison value. Not required for `exists`/`notExists`." },
+        "message": { "type": "string", "description": "Failure message." }
+      }
+    },
+
+    "flowWith": {
+      "title": "Flow (user-defined) task",
+      "description": "Import another Flow and run it as a single discrete task. This is how user-defined tasks are implemented.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["use"],
+      "properties": {
+        "use": { "$ref": "#/$defs/reference" },
+        "input": { "type": "object", "description": "Initial Pipeline state passed into the imported Flow." }
+      }
+    },
+
+    "context": {
+      "title": "Context",
+      "description": "The environment variables, secrets and lifecycle hooks available to the tasks in a Flow. Contexts are reusable and may be defined standalone (context.*) for reuse across Flows.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "context", "description": "Optional artifact discriminator for standalone context files (context.*)." },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "env": { "$ref": "#/$defs/envMap" },
+        "secrets": {
+          "type": "object",
+          "description": "Named secrets available to tasks. A value is either a literal/interpolated string or a structured source descriptor. Secrets are auto-masked in all output; a task only receives the secrets it names in its `secrets` list.",
+          "additionalProperties": {
+            "oneOf": [
+              { "type": "string" },
+              { "$ref": "#/$defs/secretSource" }
+            ]
+          }
+        },
+        "hooks": {
+          "type": "object",
+          "description": "Lifecycle hooks run over the course of a Pipeline.",
+          "additionalProperties": false,
+          "properties": {
+            "create": { "$ref": "#/$defs/hook", "description": "Run on Pipeline creation." },
+            "change": { "$ref": "#/$defs/hook", "description": "Run every time the Pipeline state changes." },
+            "destroy": { "$ref": "#/$defs/hook", "description": "Run on Pipeline destruction." },
+            "error": { "$ref": "#/$defs/hook", "description": "Run to handle errors in the Pipeline." }
+          }
+        }
+      }
+    },
+
+    "hook": {
+      "title": "Lifecycle hook",
+      "description": "A hook body: an inline list of tasks, or a reference to another Flow that implements the hook.",
+      "oneOf": [
+        { "$ref": "#/$defs/taskList" },
+        { "$ref": "#/$defs/reference" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["use"],
+          "properties": {
+            "use": { "$ref": "#/$defs/reference" },
+            "input": { "type": "object" }
+          }
+        }
+      ]
+    },
+
+    "environment": {
+      "title": "Environment",
+      "description": "Declarative description of the runtime environment a Flow runs in. Used by an Environment Provider to provision resources for a Pipeline. Reusable and may be defined standalone (environment.*). Provider-specific keys are permitted at the top level and under `options`.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "kind": { "const": "environment", "description": "Optional artifact discriminator for standalone environment files (environment.*)." },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "os": { "type": "string", "description": "Operating system.", "examples": ["linux", "darwin", "windows"] },
+        "arch": { "type": "string", "description": "CPU architecture.", "examples": ["amd64", "arm64"] },
+        "platform": {
+          "type": "string",
+          "description": "Target platform the environment runs on: local machine or a cloud provider.",
+          "examples": ["local", "aws", "gcp", "azure", "fly"]
+        },
+        "provider": {
+          "type": "string",
+          "description": "Name of the Environment Provider that materialises this environment. A provider is a standalone binary or a Flow implementing the bootstrap/deploy/clean/destroy methods. Defaults to a provider inferred from `platform`."
+        },
+        "runtime": {
+          "type": "string",
+          "description": "Execution substrate for the Flow.",
+          "enum": ["container", "vm", "microvm", "cloud-instance", "process"]
+        },
+        "image": {
+          "type": "string",
+          "description": "Standard image to use — a container image reference or a machine/VM image id.",
+          "examples": ["ubuntu:24.04", "ami-0abcd1234"]
+        },
+        "resources": { "$ref": "#/$defs/resources" },
+        "bootstrap": {
+          "description": "Tasks to run on environment/container init. Follows the Flow task model — an inline task list or a reference to a Flow file.",
+          "$ref": "#/$defs/hook"
+        },
+        "options": {
+          "type": "object",
+          "description": "Provider/platform-specific options. The accepted shape is unique to each provider (e.g. AWS ECS differs from AWS EC2, fly.io, Google Cloud Run).",
+          "additionalProperties": true
+        }
+      }
+    },
+
+    "resources": {
+      "title": "Resource allocation",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": { "type": ["string", "number"], "description": "vCPU count or quantity, e.g. 2 or '500m'." },
+        "memory": { "type": "string", "description": "Memory quantity, e.g. '512Mi', '2Gi'." },
+        "storage": { "type": "string", "description": "Storage quantity, e.g. '10Gi'." },
+        "gpu": { "type": ["string", "number"], "description": "GPU count or type." }
+      }
+    },
+
+    "envMap": {
+      "title": "Environment variable map",
+      "description": "Map of environment variable names to string values. Values may interpolate secrets or Pipeline state via the engine's ${{ ... }} syntax.",
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+
+    "secretSource": {
+      "title": "Secret source",
+      "description": "Structured descriptor for where a secret value is read from. Provider-specific keys are permitted.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "env": { "type": "string", "description": "Read from a host environment variable." },
+        "file": { "type": "string", "description": "Read from a file path." },
+        "provider": { "type": "string", "description": "Named secret provider, e.g. 'aws-sm', 'gcp-sm', 'vault'." },
+        "key": { "type": "string", "description": "Key/path within the secret provider." }
+      }
+    },
+
+    "duration": {
+      "title": "Duration",
+      "description": "A duration, either an integer number of seconds or a string like '500ms', '30s', '5m', '1h'.",
+      "oneOf": [
+        { "type": "string", "pattern": "^[0-9]+(ms|s|m|h)$" },
+        { "type": "integer", "minimum": 0 }
+      ]
+    }
+
+  }
+}

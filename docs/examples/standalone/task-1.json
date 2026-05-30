@@ -1,0 +1,13 @@
+{
+  "kind": "task",
+  "name": "fetch-config",
+  "type": "fetch",
+  "if": "${{ env.LOG_LEVEL !== 'silent' }}",
+  "secrets": ["API_KEY"],
+  "with": {
+    "url": "https://config.example.com/app.json",
+    "method": "GET",
+    "headers": { "Authorization": "Bearer ${{ secrets.API_KEY }}" }
+  },
+  "output": "config"
+}

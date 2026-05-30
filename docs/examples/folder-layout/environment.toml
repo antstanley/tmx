@@ -1,0 +1,10 @@
+# Standalone environment.* — inherited by every task in this folder.
+kind = "environment"
+name = "local-docker"
+platform = "local"
+runtime = "container"
+image = "ubuntu:24.04"
+
+[resources]
+cpu = 2
+memory = "1Gi"

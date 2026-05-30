@@ -1,0 +1,27 @@
+kind: provider
+name: local-docker
+description: Runs Flows in local Docker containers.
+platform: local
+type: flow            # implemented as TMX tasks (vs. type: binary + a `binary:` path)
+
+methods:
+  bootstrap:
+    - name: ensure-network
+      type: execute
+      with:
+        command: docker network create tmx-net || true
+  deploy:
+    - name: start-container
+      type: execute
+      with:
+        command: docker run -d --network tmx-net --name ${{ run.id }} ${{ environment.image }}
+  clean:
+    - name: stop-container
+      type: execute
+      with:
+        command: docker rm -f ${{ run.id }}
+  destroy:
+    - name: remove-network
+      type: execute
+      with:
+        command: docker network rm tmx-net || true

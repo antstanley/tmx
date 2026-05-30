@@ -1,0 +1,6 @@
+# Local validation venv (created by scripts/validate.sh when uv is unavailable)
+.venv-tmx/
+
+# Python caches
+__pycache__/
+*.pyc

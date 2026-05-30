@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tmx.dev/schemas/tmx-provider.schema.json",
+  "title": "TMX Environment Provider Manifest",
+  "description": "Schema for an Environment Provider manifest. A provider materialises the `environment` block of a Flow into real resources. It is implemented either as a standalone binary (invoked by the core TMX CLI) or as a Flow that implements the standard methods. Every provider must implement bootstrap, deploy, clean and destroy.",
+  "type": "object",
+  "required": ["name", "type", "methods"],
+  "additionalProperties": false,
+  "properties": {
+    "kind": { "const": "provider", "description": "Artifact discriminator. Identifies this document as a provider manifest." },
+    "name": { "type": "string", "description": "Provider name, as referenced by an environment's `provider` field.", "examples": ["aws-ecs", "fly", "local-docker"] },
+    "description": { "type": "string" },
+    "version": { "type": "string" },
+    "platform": { "type": "string", "description": "Platform this provider targets.", "examples": ["local", "aws", "gcp", "azure", "fly"] },
+    "type": {
+      "type": "string",
+      "description": "How the provider is implemented. `binary` — a standalone executable invoked by the core TMX CLI; `flow` — a Flow whose tasks implement each method.",
+      "enum": ["binary", "flow"]
+    },
+    "binary": { "type": "string", "description": "Path or name of the standalone executable. Used when `type` is `binary`." },
+    "optionsSchema": {
+      "type": ["object", "string"],
+      "description": "Optional JSON Schema (inline object or a $ref/path string) describing the provider-specific `environment.options` this provider accepts. Lets the CLI validate environment definitions against the chosen provider."
+    },
+    "methods": {
+      "type": "object",
+      "description": "The standard lifecycle methods every provider must implement.",
+      "required": ["bootstrap", "deploy", "clean", "destroy"],
+      "additionalProperties": false,
+      "properties": {
+        "bootstrap": { "$ref": "#/$defs/method", "description": "Bootstrap the environment to enable Flow runs (e.g. provision network, create clusters)." },
+        "deploy": { "$ref": "#/$defs/method", "description": "Create what is required for a specific (or set of) Flow runs." },
+        "clean": { "$ref": "#/$defs/method", "description": "Remove deployed instances used for Flow runs." },
+        "destroy": { "$ref": "#/$defs/method", "description": "Destroy the entire environment, including everything created by bootstrap." }
+      }
+    }
+  },
+  "allOf": [
+    { "if": { "properties": { "type": { "const": "binary" } } }, "then": { "required": ["binary"] } }
+  ],
+
+  "$defs": {
+    "method": {
+      "title": "Provider method implementation",
+      "description": "How a single provider method is carried out. For `binary` providers this is typically the subcommand string the CLI invokes; for `flow` providers it is a Flow reference, an inline list of TMX tasks, or a Flow import.",
+      "oneOf": [
+        { "type": "string", "description": "A subcommand (binary providers) or a Flow reference (flow providers)." },
+        {
+          "type": "array",
+          "description": "Inline list of TMX tasks. Items conform to the task schema in tmx.schema.json.",
+          "items": { "$ref": "https://tmx.dev/schemas/tmx.schema.json#/$defs/task" },
+          "minItems": 1
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["use"],
+          "properties": {
+            "use": { "type": "string", "description": "Reference to a Flow implementing this method." },
+            "input": { "type": "object" }
+          }
+        }
+      ]
+    }
+  }
+}
