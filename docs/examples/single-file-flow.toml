@@ -79,6 +79,7 @@ type = "chat-completion"
 secrets = ["ANTHROPIC_API_KEY"]
 [tasks.with]
 model = "claude-opus-4-8"
+apiUrl = "https://api.anthropic.com/v1/chat/completions"
 apiKey = "${{ secrets.ANTHROPIC_API_KEY }}"
 [[tasks.with.messages]]
 role = "system"

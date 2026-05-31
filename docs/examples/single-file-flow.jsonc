@@ -80,6 +80,7 @@
       "secrets": ["ANTHROPIC_API_KEY"], // only this secret is unmasked for this task
       "with": {
         "model": "claude-opus-4-8",
+        "apiUrl": "https://api.anthropic.com/v1/chat/completions",
         "apiKey": "${{ secrets.ANTHROPIC_API_KEY }}",
         "messages": [
           { "role": "system", "content": "You summarize CI runs." },

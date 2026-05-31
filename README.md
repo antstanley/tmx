@@ -118,7 +118,7 @@ execution — the only control flow is skipping a task via its `if` condition.
 | `fetch` | HTTP/HTTPS request | `url`*, `method`, `headers`, `query`, `body`, `bodyType`, `timeout`, `followRedirects`, `retries` |
 | `file` | Read/write files | `operation`* (read/write/append/delete/copy/move/exists), `path`*, `content`, `encoding`, `destination` |
 | `store` | S3-compatible object storage | `operation`* (get/put/delete/list/head), `bucket`*, `key`, `endpoint`, `region`, `content`, `contentType`, `credentials` |
-| `chat-completion` | Call an LLM (ChatCompletions spec) | `model`*, `messages`*, `baseUrl`, `apiKey`, `temperature`, `maxTokens`, `topP`, `stream`, `tools`, `responseFormat` |
+| `chat-completion` | Call an LLM (ChatCompletions spec) | `model`*, `messages`*, `apiUrl`, `baseUrl`, `apiKey`, `temperature`, `maxTokens`, `topP`, `stream`, `tools`, `responseFormat` |
 | `assert` | Assert values | `assertions`* — each `{ actual, operator, expected?, message? }` |
 | `flow` | Import another Flow as a task | `use`* (reference), `inputs` |
 
