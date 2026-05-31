@@ -74,7 +74,7 @@ The smallest useful Flow:
 # hello.yaml
 tasks:
   - name: greet
-    type: execute
+    type: exec
     with:
       command: echo "hello from TMX"
 ```
@@ -113,7 +113,7 @@ execution — the only control flow is skipping a task via its `if` condition.
 
 | `type` | Purpose | Key `with` fields |
 | --- | --- | --- |
-| `execute` | Run a single shell command | `command`*, `args`, `shell`, `cwd`, `env`, `timeout` |
+| `exec` | Run a single shell command | `command`*, `args`, `shell`, `cwd`, `env`, `timeout` |
 | `run` | Run a script in a named language | `language` (default `bash`), `script` \| `file`*, `args`, `env`, `cwd`, `timeout` |
 | `fetch` | HTTP/HTTPS request | `url`*, `method`, `headers`, `query`, `body`, `bodyType`, `timeout`, `followRedirects`, `retries` |
 | `file` | Read/write files | `operation`* (read/write/append/delete/copy/move/exists), `path`*, `content`, `encoding`, `destination` |
@@ -124,7 +124,7 @@ execution — the only control flow is skipping a task via its `if` condition.
 
 <sub>\* required</sub>
 
-**`execute` vs `run`.** `execute` runs a single shell command line. `run` runs a
+**`exec` vs `run`.** `exec` runs a single shell command line. `run` runs a
 script/program in a named language or interpreter (`python`, `node`, `ruby`, `bash`, …),
 defaulting to `bash`, via either inline `script` or a `file` path.
 

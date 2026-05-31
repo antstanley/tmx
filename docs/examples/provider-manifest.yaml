@@ -7,21 +7,21 @@ type: flow            # implemented as TMX tasks (vs. type: binary + a `binary:`
 methods:
   bootstrap:
     - name: ensure-network
-      type: execute
+      type: exec
       with:
         command: docker network create tmx-net || true
   deploy:
     - name: start-container
-      type: execute
+      type: exec
       with:
         command: docker run -d --network tmx-net --name ${{ run.id }} ${{ environment.image }}
   clean:
     - name: stop-container
-      type: execute
+      type: exec
       with:
         command: docker rm -f ${{ run.id }}
   destroy:
     - name: remove-network
-      type: execute
+      type: exec
       with:
         command: docker network rm tmx-net || true

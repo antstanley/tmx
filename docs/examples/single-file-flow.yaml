@@ -13,7 +13,7 @@ environment:
     memory: 2Gi
   bootstrap:
     - name: install
-      type: execute
+      type: exec
       with:
         command: npm ci
   options:            # provider-specific, free-form
@@ -55,7 +55,7 @@ inputs:
 # ---- Tasks: run in order ----
 tasks:
   - name: test
-    type: execute
+    type: exec
     with:
       command: npm test
       timeout: 5m

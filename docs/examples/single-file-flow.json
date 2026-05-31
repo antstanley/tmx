@@ -9,7 +9,7 @@
     "image": "node:22-alpine",
     "resources": { "cpu": "1", "memory": "2Gi" },
     "bootstrap": [
-      { "name": "install", "type": "execute", "with": { "command": "npm ci" } }
+      { "name": "install", "type": "exec", "with": { "command": "npm ci" } }
     ],
     "options": {
       "cluster": "ci-cluster",
@@ -43,7 +43,7 @@
   "tasks": [
     {
       "name": "test",
-      "type": "execute",
+      "type": "exec",
       "with": { "command": "npm test", "timeout": "5m" }
     },
     {

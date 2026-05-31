@@ -7,7 +7,7 @@
   },
   "hooks": {
     "create": [
-      { "name": "init", "type": "execute", "with": { "command": "mkdir -p .work" } }
+      { "name": "init", "type": "exec", "with": { "command": "mkdir -p .work" } }
     ]
   }
 }

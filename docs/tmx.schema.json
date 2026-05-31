@@ -92,7 +92,7 @@
         "type": {
           "description": "The task implementation to run. One of the built-in types, or `flow` to import another Flow as a user-defined task.",
           "type": "string",
-          "enum": ["execute", "run", "fetch", "file", "store", "chat-completion", "assert", "flow"]
+          "enum": ["exec", "run", "fetch", "file", "store", "chat-completion", "assert", "flow"]
         },
         "if": {
           "type": "string",
@@ -138,7 +138,7 @@
         }
       },
       "allOf": [
-        { "if": { "properties": { "type": { "const": "execute" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/executeWith" } }, "required": ["with"] } },
+        { "if": { "properties": { "type": { "const": "exec" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/execWith" } }, "required": ["with"] } },
         { "if": { "properties": { "type": { "const": "run" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/runWith" } }, "required": ["with"] } },
         { "if": { "properties": { "type": { "const": "fetch" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/fetchWith" } }, "required": ["with"] } },
         { "if": { "properties": { "type": { "const": "file" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/fileWith" } }, "required": ["with"] } },
@@ -149,8 +149,8 @@
       ]
     },
 
-    "executeWith": {
-      "title": "Execute task",
+    "execWith": {
+      "title": "Exec task",
       "description": "Run a shell command.",
       "type": "object",
       "additionalProperties": false,
@@ -167,7 +167,7 @@
 
     "runWith": {
       "title": "Run task",
-      "description": "Run a program/script in a named language/interpreter. Provide either inline `script` or a `file` path. Distinct from `execute`, which runs a single shell command line.",
+      "description": "Run a program/script in a named language/interpreter. Provide either inline `script` or a `file` path. Distinct from `exec`, which runs a single shell command line.",
       "type": "object",
       "additionalProperties": false,
       "properties": {

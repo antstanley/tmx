@@ -1,5 +1,5 @@
 {
   "tasks": [
-    { "name": "hello", "type": "execute", "with": { "command": "echo hello" } }
+    { "name": "hello", "type": "exec", "with": { "command": "echo hello" } }
   ]
 }

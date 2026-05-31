@@ -9,6 +9,6 @@ secrets:
 hooks:
   create:
     - name: init
-      type: execute
+      type: exec
       with:
         command: mkdir -p .work

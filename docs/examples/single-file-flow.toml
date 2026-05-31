@@ -15,7 +15,7 @@ memory = "2Gi"
 
 [[environment.bootstrap]]
 name = "install"
-type = "execute"
+type = "exec"
 with = { command = "npm ci" }
 
 # provider-specific, free-form
@@ -53,7 +53,7 @@ default = "builds"
 # ---- Tasks: run in order ----
 [[tasks]]
 name = "test"
-type = "execute"
+type = "exec"
 with = { command = "npm test", timeout = "5m" }
 
 [[tasks]]

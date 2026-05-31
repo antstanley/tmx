@@ -14,7 +14,7 @@
     "resources": { "cpu": "1", "memory": "2Gi" },
     "bootstrap": [
       // tasks run on container init, before the Flow's own tasks
-      { "name": "install", "type": "execute", "with": { "command": "npm ci" } }
+      { "name": "install", "type": "exec", "with": { "command": "npm ci" } }
     ],
     "options": {
       // provider-specific, free-form
@@ -55,7 +55,7 @@
   "tasks": [
     {
       "name": "test",
-      "type": "execute",
+      "type": "exec",
       "with": { "command": "npm test", "timeout": "5m" }
     },
     {

@@ -17,7 +17,7 @@ identical** (parity is asserted by the validator):
 | [`single-file-flow.jsonc`](./single-file-flow.jsonc) | JSONC (JSON + comments) |
 | [`minimal-flow.json`](./minimal-flow.json) | smallest valid Flow (`tasks` only) |
 
-It exercises every built-in task type (`execute`, `run`, `fetch`, `file`, `store`,
+It exercises every built-in task type (`exec`, `run`, `fetch`, `file`, `store`,
 `chat-completion`, `assert`, `flow`), inline environment + context, lifecycle hooks,
 an `if` skip, and a per-task `secrets` declaration.
 

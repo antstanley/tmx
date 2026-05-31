@@ -51,7 +51,7 @@ via a discriminated union:
 
 | `type`            | `with` shape         | Purpose                                                   |
 | ----------------- | -------------------- | --------------------------------------------------------- |
-| `execute`         | `executeWith`        | Run a shell command                                       |
+| `exec`            | `execWith`           | Run a shell command                                       |
 | `run`             | `runWith`            | Run a program/script in any language (`script` or `file`) |
 | `fetch`           | `fetchWith`          | HTTP/HTTPS request                                        |
 | `file`            | `fileWith`           | Read/write files                                          |
@@ -137,7 +137,7 @@ These were open questions in the first draft; now answered and reflected in the 
    grammar is engine-enforced, not schema-validated.)
 4. **Output is merged by task `name`.** `state[name] = output`; the optional `output`
    field overrides the key. *Reflected:* `name`/`output` descriptions.
-5. **`execute` vs `run`.** `execute` = a single shell command; `run` = a script in a
+5. **`exec` vs `run`.** `exec` = a single shell command; `run` = a script in a
    named language/interpreter. `run.language` now defaults to **`bash`**. *Reflected:*
    `runWith.language` default + descriptions.
 6. **Provider contract is a separate schema.** `bootstrap`/`deploy`/`clean`/`destroy`
