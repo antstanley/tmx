@@ -33,7 +33,33 @@
             { "$ref": "#/$defs/reference" }
           ]
         },
+        "inputs": {
+          "type": "object",
+          "description": "Declared input variables the Flow accepts when invoked — from the CLI (`tmx run flow.yaml --input name=value`) or from a calling `flow` task's `inputs`. Each value is referenced inside the Flow as `${{ inputs.NAME }}`. Maps input name → input spec.",
+          "additionalProperties": { "$ref": "#/$defs/inputSpec" }
+        },
         "tasks": { "$ref": "#/$defs/taskList" }
+      }
+    },
+
+    "inputSpec": {
+      "title": "Input variable spec",
+      "description": "Declaration of a single Flow input variable. A supplied value is referenced inside the Flow as `${{ inputs.NAME }}`.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Expected JSON type of the input value.",
+          "enum": ["string", "number", "boolean", "object", "array"]
+        },
+        "description": { "type": "string" },
+        "required": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, the input must be supplied at invocation."
+        },
+        "default": { "description": "Value used when the input is not supplied. Any JSON type." }
       }
     },
 
@@ -293,7 +319,7 @@
       "required": ["use"],
       "properties": {
         "use": { "$ref": "#/$defs/reference" },
-        "input": { "type": "object", "description": "Initial Pipeline state passed into the imported Flow." }
+        "inputs": { "type": "object", "description": "Input variables passed into the imported Flow, keyed by the input names it declares (`inputs.NAME`). Available inside the imported Flow as `${{ inputs.NAME }}`." }
       }
     },
 
@@ -343,7 +369,7 @@
           "required": ["use"],
           "properties": {
             "use": { "$ref": "#/$defs/reference" },
-            "input": { "type": "object" }
+            "inputs": { "type": "object", "description": "Input variables passed into the referenced Flow, keyed by the input names it declares." }
           }
         }
       ]

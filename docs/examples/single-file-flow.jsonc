@@ -42,6 +42,15 @@
     }
   },
 
+  // ---- Inputs: variables supplied at invocation (CLI --input or a calling flow task) ----
+  "inputs": {
+    "artifactPrefix": {
+      "type": "string",
+      "description": "Object-storage key prefix for build artifacts.",
+      "default": "builds"
+    }
+  },
+
   // ---- Tasks: run in order ----
   "tasks": [
     {
@@ -61,7 +70,7 @@
       "with": {
         "operation": "put",
         "bucket": "acme-artifacts",
-        "key": "builds/dist.tgz",
+        "key": "${{ inputs.artifactPrefix }}/dist.tgz",
         "endpoint": "https://s3.us-east-1.amazonaws.com"
       }
     },
@@ -92,7 +101,7 @@
       "type": "flow",
       "with": {
         "use": "../deploy/flow.yaml",
-        "input": { "artifact": "builds/dist.tgz" }
+        "inputs": { "artifact": "${{ inputs.artifactPrefix }}/dist.tgz" }
       }
     }
   ]

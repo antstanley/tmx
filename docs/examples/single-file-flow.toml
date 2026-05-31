@@ -44,6 +44,12 @@ url = "https://hooks.example.com/start"
 method = "POST"
 body = { flow = "build-and-publish" }
 
+# ---- Inputs: variables supplied at invocation (CLI --input or a calling flow task) ----
+[inputs.artifactPrefix]
+type = "string"
+description = "Object-storage key prefix for build artifacts."
+default = "builds"
+
 # ---- Tasks: run in order ----
 [[tasks]]
 name = "test"
@@ -64,7 +70,7 @@ if = "${{ tasks.build.success }}"
 [tasks.with]
 operation = "put"
 bucket = "acme-artifacts"
-key = "builds/dist.tgz"
+key = "${{ inputs.artifactPrefix }}/dist.tgz"
 endpoint = "https://s3.us-east-1.amazonaws.com"
 
 [[tasks]]
@@ -95,4 +101,4 @@ name = "deploy"
 type = "flow"
 [tasks.with]
 use = "../deploy/flow.yaml"
-input = { artifact = "builds/dist.tgz" }
+inputs = { artifact = "${{ inputs.artifactPrefix }}/dist.tgz" }

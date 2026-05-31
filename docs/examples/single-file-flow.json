@@ -33,6 +33,13 @@
       "error": "./hooks/on-error.yaml"
     }
   },
+  "inputs": {
+    "artifactPrefix": {
+      "type": "string",
+      "description": "Object-storage key prefix for build artifacts.",
+      "default": "builds"
+    }
+  },
   "tasks": [
     {
       "name": "test",
@@ -51,7 +58,7 @@
       "with": {
         "operation": "put",
         "bucket": "acme-artifacts",
-        "key": "builds/dist.tgz",
+        "key": "${{ inputs.artifactPrefix }}/dist.tgz",
         "endpoint": "https://s3.us-east-1.amazonaws.com"
       }
     },
@@ -82,7 +89,7 @@
       "type": "flow",
       "with": {
         "use": "../deploy/flow.yaml",
-        "input": { "artifact": "builds/dist.tgz" }
+        "inputs": { "artifact": "${{ inputs.artifactPrefix }}/dist.tgz" }
       }
     }
   ]

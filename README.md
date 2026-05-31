@@ -120,7 +120,7 @@ execution — the only control flow is skipping a task via its `if` condition.
 | `store` | S3-compatible object storage | `operation`* (get/put/delete/list/head), `bucket`*, `key`, `endpoint`, `region`, `content`, `contentType`, `credentials` |
 | `chat-completion` | Call an LLM (ChatCompletions spec) | `model`*, `messages`*, `baseUrl`, `apiKey`, `temperature`, `maxTokens`, `topP`, `stream`, `tools`, `responseFormat` |
 | `assert` | Assert values | `assertions`* — each `{ actual, operator, expected?, message? }` |
-| `flow` | Import another Flow as a task | `use`* (reference), `input` |
+| `flow` | Import another Flow as a task | `use`* (reference), `inputs` |
 
 <sub>\* required</sub>
 
@@ -132,7 +132,51 @@ defaulting to `bash`, via either inline `script` or a `file` path.
 `contains`, `matches`, `exists`, `notExists`.
 
 **User-defined tasks** are implemented as Flows imported via the `flow` task type — `use`
-references the Flow and `input` seeds its initial Pipeline state.
+references the Flow and `inputs` supplies the imported Flow's declared [input
+variables](#flow-inputs).
+
+### Flow inputs
+
+A Flow can declare **input variables** it accepts when invoked — from the CLI or from
+another Flow that imports it. Inputs are declared on the Flow under `inputs`, mapping an
+input name to its spec:
+
+| Field | Description |
+| --- | --- |
+| `type` | Optional expected JSON type: `string`, `number`, `boolean`, `object` or `array`. |
+| `description` | Optional human description. |
+| `required` | `false` (default) or `true` — whether the input must be supplied. |
+| `default` | Value used when the input is not supplied (any type). |
+
+```yaml
+inputs:
+  artifactPrefix:
+    type: string
+    description: Object-storage key prefix for build artifacts.
+    default: builds
+```
+
+Inside the Flow, a supplied input is read via interpolation as `${{ inputs.NAME }}`
+(e.g. `${{ inputs.artifactPrefix }}`).
+
+**Supplying inputs.** Values are passed as an `inputs` object of name → value:
+
+- **From the CLI** with a repeatable `--input key=value` flag:
+
+  ```bash
+  tmx run flow.yaml --input artifactPrefix=releases --input dryRun=true
+  ```
+
+- **From a `flow` task** that imports the Flow, via `with.inputs`:
+
+  ```yaml
+  - name: deploy
+    type: flow
+    with:
+      use: ../deploy/flow.yaml
+      inputs:
+        artifact: "${{ inputs.artifactPrefix }}/dist.tgz"
+  ```
 
 ### Context
 
@@ -215,8 +259,9 @@ of TMX tasks. An environment's `provider` field names the manifest to use. See
 
 ## Interpolation
 
-Values may reference secrets and prior Pipeline state via `${{ ... }}` interpolation
-(e.g. `Bearer ${{ secrets.API_KEY }}`, `${{ tasks.build.success }}`). The schema treats
+Values may reference secrets, declared [flow inputs](#flow-inputs) and prior Pipeline
+state via `${{ ... }}` interpolation (e.g. `Bearer ${{ secrets.API_KEY }}`,
+`${{ inputs.artifactPrefix }}`, `${{ tasks.build.success }}`). The schema treats
 interpolated values as strings; the expression grammar is evaluated by the engine, not the
 schema.
 

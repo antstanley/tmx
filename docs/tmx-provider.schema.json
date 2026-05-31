@@ -57,7 +57,7 @@
           "required": ["use"],
           "properties": {
             "use": { "type": "string", "description": "Reference to a Flow implementing this method." },
-            "input": { "type": "object" }
+            "inputs": { "type": "object", "description": "Input variables passed into the referenced Flow, keyed by the input names it declares." }
           }
         }
       ]

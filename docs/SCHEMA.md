@@ -146,6 +146,14 @@ These were open questions in the first draft; now answered and reflected in the 
 7. **Secrets auto-masked, opt-in per task.** Secrets are masked in all output; a task
    declares the secret names it needs unmasked via its `secrets` array. *Reflected:*
    task `secrets` array + context/secret descriptions.
+8. **Flows declare input variables.** A Flow may declare `inputs` (name → spec with
+   optional `type`/`description`/`required`/`default`), supplied at invocation from the
+   CLI (`--input key=value`, repeatable) or by a calling `flow` task. The value passed at
+   a call site is standardised on an `inputs` object (renamed from the earlier `input`)
+   across `flowWith`, lifecycle `hook` `{use, …}` bodies, and the provider manifest's
+   `method` `{use, …}` body. Inputs are read inside the Flow via `${{ inputs.NAME }}`.
+   *Reflected:* `flow.inputs` + new `inputSpec` def; `input` → `inputs` at every flow
+   call site (core + provider schemas) and in the examples.
 
 ### Interpretation notes (flag if you'd prefer otherwise)
 
