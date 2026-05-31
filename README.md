@@ -56,14 +56,19 @@ sections, **or** as standalone files in a folder used as default configs with in
    |
    |- environment.[yaml|json|jsonc|toml]   <- where tasks run. Not required.
    |- context.[yaml|json|jsonc|toml]       <- shared env vars, secrets, lifecycle hooks.
-   |- task-1.[yaml|json|jsonc|toml]        <- inherits the folder environment + context.
-   |- task-2.[yaml|json|jsonc|toml]
-   |- task-3 ...
+   |- task-1.[yaml|json|jsonc|toml]        <- any filename; inherits folder env + context.
+   |- build.[yaml|json|jsonc|toml]         <- task filenames are free (task-N is illustrative).
+   |- deploy ...
 ```
 
 In this layout all tasks inherit the environment and context from the standalone files.
-Where an inline artifact and a `reference` are both allowed, a **reference** is just a
-string — a relative/absolute file path or a registered name (e.g. `./context.yaml` or
+**Task filenames are arbitrary** — the `task-N` naming is just an example; a task file is
+identified by its `kind` (or by being run as a task) and is validated against the task
+schema before it runs. The reserved names `environment.*` / `context.*` stay conventional
+for the shared folder artifacts. Running the folder (`tmx run <folder>`) runs **all** its
+tasks in filename order, sharing the folder-level environment and context. Where an inline
+artifact and a `reference` are both allowed, a **reference** is just a string — a
+relative/absolute file path or a registered name (e.g. `./context.yaml` or
 `my-org/base-context`).
 
 Inheritance is scoped to the **same folder** only; there is no inheritance from a parent
@@ -477,6 +482,8 @@ docs/
   tmx.schema.json            # core schema (Flow/Task/Context/Environment)
   tmx-provider.schema.json   # provider manifest schema
   SCHEMA.md                  # design decisions + open questions
+  CLI.md                     # proposed `tmx` command-line interface (design draft)
+  RUNTIME.md                 # proposed execution engine — hexagonal ports & adapters (design draft)
   comparison.md              # task/workflow-runner landscape + TMX positioning
   examples/                  # validated examples in all four formats
 scripts/

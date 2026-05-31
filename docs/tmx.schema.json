@@ -3,7 +3,7 @@
   "$id": "https://tmx.dev/schemas/0.2.0/tmx.schema.json",
   "$comment": "TMX spec version 0.2.0 (draft). The spec version is carried in the schema $id path so versions can coexist for forward-compatibility; bumped from the implicit 0.1.0 by the addition of the `map` and `eval` task types and the `produces` typed-output contract.",
   "title": "TMX Flow",
-  "description": "Schema for a TMX Flow document. A Flow is the static definition of an Environment, a Context and a list of Tasks. Only `tasks` is required. Environment and Context may be inlined as objects or referenced by path/name so they can be reused across Flows. Standalone artifact files (environment.*, context.*, task-N.*) validate against the corresponding sub-schemas under `$defs` (`environment`, `context`, `task`). This document targets YAML/JSON/JSONC/TOML sources after they are parsed to a JSON model.",
+  "description": "Schema for a TMX Flow document. A Flow is the static definition of an Environment, a Context and a list of Tasks. Only `tasks` is required. Environment and Context may be inlined as objects or referenced by path/name so they can be reused across Flows. Standalone artifact files validate against the corresponding sub-schemas under `$defs` (`environment`, `context`, `task`); a file's `kind` (or filename convention when `kind` is omitted) selects the schema. Task files may use ANY filename — the `task-N.*` seen in the examples is illustrative only, not required. This document targets YAML/JSON/JSONC/TOML sources after they are parsed to a JSON model.",
   "type": "object",
   "$ref": "#/$defs/flow",
 
@@ -113,7 +113,7 @@
       "required": ["type"],
       "additionalProperties": false,
       "properties": {
-        "kind": { "const": "task", "description": "Optional artifact discriminator for standalone task files (task-N.*). Lets a single validator dispatch by `kind` rather than filename." },
+        "kind": { "const": "task", "description": "Optional artifact discriminator for standalone task files. Task files may use ANY filename — `kind` (not the name) identifies them; the `task-N.*` convention in the examples is illustrative only. Lets a single validator dispatch by `kind` rather than filename. A file run as a task is validated against this schema before it executes." },
         "name": { "type": "string", "description": "Identifier for the task. Should be unique within the Flow. Task output is merged into the Pipeline state under this name (`state[name] = output`)." },
         "description": { "type": "string" },
         "type": {

@@ -37,12 +37,18 @@ The README describes two authoring styles. Both map onto the same `$defs`:
 | Single combined file         | `flow.yaml` with `environment`/`context`/`tasks` sections | root (`$defs/flow`) |
 | Standalone files in a folder | `environment.*`                                           | `$defs/environment` |
 |                              | `context.*`                                               | `$defs/context`     |
-|                              | `task-N.*`                                                | `$defs/task`        |
+|                              | _any filename_ (e.g. `task-N.*`)                          | `$defs/task`        |
 
 Standalone files validate against the sub-definition of the same name — see
 [`examples/standalone/`](./examples/standalone). (Tooling note: to validate a
 standalone file, point a validator at `#/$defs/<name>` while keeping the schema's
 `$defs` in scope, as the example validation does.)
+
+**Task filenames are free.** The `task-N.*` naming above (and in the examples) is
+illustrative only — a task file may use **any** name. Its `kind` (or, when `kind` is
+omitted, the fact that it is run/loaded as a task) identifies it, and it is validated
+against `$defs/task` **before it runs**. The reserved names `environment.*` / `context.*`
+remain conventional for the shared folder artifacts.
 
 ## Tasks
 
