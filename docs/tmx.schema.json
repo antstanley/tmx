@@ -280,8 +280,7 @@
       "required": ["model", "messages"],
       "properties": {
         "model": { "type": "string" },
-        "apiUrl": { "type": "string", "description": "Full URL of the ChatCompletions API endpoint to call, e.g. 'https://api.openai.com/v1/chat/completions'. This is the complete endpoint URL and takes precedence over `baseUrl` (just the API base, e.g. 'https://api.openai.com/v1') when both are given." },
-        "baseUrl": { "type": "string", "description": "API base URL of an OpenAI-compatible endpoint." },
+        "apiUrl": { "type": "string", "description": "Full URL of the ChatCompletions API endpoint to call, e.g. 'https://api.openai.com/v1/chat/completions'." },
         "apiKey": { "type": "string", "description": "API key. Typically references a secret from the context." },
         "messages": {
           "type": "array",
