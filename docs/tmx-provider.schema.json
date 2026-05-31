@@ -42,14 +42,21 @@
   "$defs": {
     "method": {
       "title": "Provider method implementation",
-      "description": "How a single provider method is carried out. For `binary` providers this is typically the subcommand string the CLI invokes; for `flow` providers it is a Flow reference, an inline list of TMX tasks, or a Flow import.",
+      "description": "How a single provider method is carried out. For `binary` providers this is typically the subcommand string the CLI invokes; for `flow` providers it is a Flow reference, an inline set of TMX tasks (an ordered array, or a name-keyed map where the key is the task name), or a Flow import. The array form is explicitly ordered; the map form runs in the source document's key order.",
       "oneOf": [
         { "type": "string", "description": "A subcommand (binary providers) or a Flow reference (flow providers)." },
         {
           "type": "array",
-          "description": "Inline list of TMX tasks. Items conform to the task schema in tmx.schema.json.",
+          "description": "Inline, ordered list of TMX tasks. Items conform to the task schema in tmx.schema.json.",
           "items": { "$ref": "https://tmx.dev/schemas/tmx.schema.json#/$defs/task" },
           "minItems": 1
+        },
+        {
+          "type": "object",
+          "title": "Inline task map",
+          "description": "Inline name-keyed map of TMX tasks: each property name is the task's name and its value is a task object conforming to the task schema in tmx.schema.json. Runs in the source document's key order.",
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "https://tmx.dev/schemas/tmx.schema.json#/$defs/task" }
         },
         {
           "type": "object",

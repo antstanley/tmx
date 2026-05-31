@@ -1,0 +1,17 @@
+kind: flow
+name: map-tasks
+description: "Flow whose `tasks` are given as a name-keyed map instead of an ordered array. Each key is the task name; tasks run in the source document's key order."
+
+# ---- Tasks: a name-keyed MAP (not an array) ----
+# The property name is the task's name, so the task object itself does not repeat `name`.
+tasks:
+  build:
+    type: exec
+    with:
+      command: npm run build
+
+  test:
+    type: exec
+    with:
+      command: npm test
+      timeout: 5m

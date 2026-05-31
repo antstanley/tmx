@@ -38,7 +38,10 @@
           "description": "Declared input variables the Flow accepts when invoked — from the CLI (`tmx run flow.yaml --input name=value`) or from a calling `flow` task's `inputs`. Each value is referenced inside the Flow as `${{ inputs.NAME }}`. Maps input name → input spec.",
           "additionalProperties": { "$ref": "#/$defs/inputSpec" }
         },
-        "tasks": { "$ref": "#/$defs/taskList" }
+        "tasks": {
+          "description": "The tasks the Flow runs. Either an ordered array of tasks, or a name-keyed map (object) whose keys are task names. The array form is explicitly ordered — tasks run top to bottom. The map form runs in the source document's key order (the order properties appear in the YAML/JSON/JSONC/TOML file).",
+          "$ref": "#/$defs/tasks"
+        }
       }
     },
 
@@ -69,6 +72,21 @@
       "type": "array",
       "minItems": 1,
       "items": { "$ref": "#/$defs/task" }
+    },
+
+    "tasks": {
+      "title": "Task collection",
+      "description": "A set of tasks, expressed as EITHER an ordered array OR a name-keyed map. Array form (`taskList`): tasks run in the order they appear. Map form: a JSON object whose property names are the task names and whose values are task objects (the task object need not repeat `name`); tasks run in the source document's key order (the order keys appear in the YAML/JSON/JSONC/TOML file). Both forms run in sequence — there is no branching, looping or parallel execution.",
+      "oneOf": [
+        { "$ref": "#/$defs/taskList" },
+        {
+          "title": "Task map",
+          "description": "A name-keyed map of tasks: each property name is the task's name and its value is a task object. Runs in the source document's key order.",
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/task" }
+        }
+      ]
     },
 
     "reference": {
@@ -394,9 +412,9 @@
 
     "hook": {
       "title": "Lifecycle hook",
-      "description": "A hook body: an inline list of tasks, or a reference to another Flow that implements the hook.",
+      "description": "A hook body: an inline set of tasks (an ordered array, or a name-keyed map where the key is the task name), or a reference to another Flow that implements the hook. The array form is explicitly ordered; the map form runs in the source document's key order.",
       "oneOf": [
-        { "$ref": "#/$defs/taskList" },
+        { "$ref": "#/$defs/tasks" },
         { "$ref": "#/$defs/reference" },
         {
           "type": "object",
@@ -442,7 +460,7 @@
         },
         "resources": { "$ref": "#/$defs/resources" },
         "bootstrap": {
-          "description": "Tasks to run on environment/container init. Follows the Flow task model — an inline task list or a reference to a Flow file.",
+          "description": "Tasks to run on environment/container init. Follows the Flow task model — an inline set of tasks (an ordered array, or a name-keyed map where the key is the task name) or a reference to a Flow file. The array form is explicitly ordered; the map form runs in the source document's key order.",
           "$ref": "#/$defs/hook"
         },
         "options": {

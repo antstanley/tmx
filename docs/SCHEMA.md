@@ -154,6 +154,14 @@ These were open questions in the first draft; now answered and reflected in the 
    `method` `{use, …}` body. Inputs are read inside the Flow via `${{ inputs.NAME }}`.
    _Reflected:_ `flow.inputs` + new `inputSpec` def; `input` → `inputs` at every flow
    call site (core + provider schemas) and in the examples.
+9. **Task collections are array-or-map.** A set of tasks may be expressed **either** as an
+   ordered array **or** as a name-keyed map (object) where the **key is the task name** (the
+   task object then need not repeat `name`). The array form is explicitly ordered; the map
+   form runs in the **source document's key order**. This applies everywhere a list of tasks
+   is accepted: a Flow's `tasks`, lifecycle hook bodies, environment `bootstrap`, and the
+   provider manifest's inline-task `method`. _Reflected:_ `taskList` kept as the array form;
+   new `tasks` def is `oneOf: [taskList, <name-keyed map>]` used by `flow.tasks` and `hook`;
+   provider `method` mirrors the map branch. See [`examples/map-tasks.yaml`](./examples/map-tasks.yaml).
 
 ### Interpretation notes (flag if you'd prefer otherwise)
 

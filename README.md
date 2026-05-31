@@ -42,7 +42,8 @@ kept semantically identical.
 Every artifact may carry an optional **`kind`** discriminator
 (`flow` | `environment` | `context` | `task`, and `provider` for manifests). When present,
 a single validator/loader can dispatch a file to the right schema instead of relying on
-filename convention. It is optional, so a minimal `{ tasks: [...] }` file is still valid.
+filename convention. It is optional, so a minimal `{ tasks: [...] }` file (array form) — or
+its name-keyed map equivalent `{ tasks: { build: {...} } }` — is still valid.
 
 ## Flows
 
@@ -92,6 +93,33 @@ state **under the task's `name`** (`state[name] = output`; override the key with
 
 Tasks run **in sequence**, one after another. There is no branching, looping or parallel
 execution — the only control flow is skipping a task via its `if` condition.
+
+A Flow's `tasks` may be given in **either** of two forms:
+
+- an **ordered array** of task objects (explicitly ordered — tasks run top to bottom), or
+- a **name-keyed map** (object) where each **key is the task's name** and its value is the
+  task object (which then need not repeat `name`).
+
+Both forms are equivalent in what they can express. The difference is ordering: the array
+form is explicitly ordered, while the map form runs in the **source document's key order**
+(the order keys appear in the YAML/JSON/JSONC/TOML file). The same array-or-map choice
+applies anywhere a set of tasks is accepted — lifecycle hooks and environment `bootstrap`.
+
+```yaml
+# array form — explicitly ordered
+tasks:
+  - name: build
+    type: exec
+    with:
+      command: npm run build
+
+# map form — key is the task name, runs in key order
+tasks:
+  build:
+    type: exec
+    with:
+      command: npm run build
+```
 
 **Common task fields** (the envelope shared by every task):
 
@@ -196,7 +224,8 @@ Lifecycle hooks:
 | `destroy` | On Pipeline destruction. |
 | `error` | To handle errors in the Pipeline. |
 
-A hook body is either a set of tasks defined inline, or a reference to another Flow that
+A hook body is either a set of tasks defined inline — an ordered array or a name-keyed map
+(key = task name), as for a Flow's `tasks` — or a reference to another Flow that
 implements it.
 
 **Secrets are opt-in per task.** All secrets are auto-masked in output everywhere; a task
@@ -228,7 +257,7 @@ Common fields:
 | `runtime` | `container` \| `vm` \| `microvm` \| `cloud-instance` \| `process`. |
 | `image` | Standard image — a container image ref or a machine/VM image id. |
 | `resources` | `cpu`, `memory`, `storage`, `gpu`. |
-| `bootstrap` | Tasks to run on environment/container init (an inline task list or a Flow reference). |
+| `bootstrap` | Tasks to run on environment/container init (an inline set of tasks — array or name-keyed map — or a Flow reference). |
 | `options` | Provider/platform-specific options (free-form). |
 
 Because environment-specific options are unique to each provider/platform (AWS ECS differs
