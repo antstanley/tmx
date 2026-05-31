@@ -125,26 +125,26 @@ These were open questions in the first draft; now answered and reflected in the 
 
 1. **Standalone files are self-identifying.** Every artifact accepts an optional `kind`
    (`flow` | `environment` | `context` | `task`, and `provider` for manifests) so one
-   validator can dispatch by `kind` instead of relying on filename. *Reflected:* a
+   validator can dispatch by `kind` instead of relying on filename. _Reflected:_ a
    `kind` const on each `$defs` artifact; `kind` set on all examples.
 2. **Context merges independently, local-wins by default.** `env`/`secrets`/`hooks`
    merge as independent sections at the key level. On a collision the in-file/`local`
    value wins by default; set `contextPrecedence: inherited` to let the parent/folder
-   value override. *Reflected:* `contextStrategy: merge|replace` + new
+   value override. _Reflected:_ `contextStrategy: merge|replace` + new
    `contextPrecedence: local|inherited` on the task envelope.
 3. **`if` is a JS-subset expression.** Truthy/falsy semantics with strict equality
-   (`===`). *Reflected:* `if` description + examples updated to `!==`/strict form. (The
+   (`===`). _Reflected:_ `if` description + examples updated to `!==`/strict form. (The
    grammar is engine-enforced, not schema-validated.)
 4. **Output is merged by task `name`.** `state[name] = output`; the optional `output`
-   field overrides the key. *Reflected:* `name`/`output` descriptions.
+   field overrides the key. _Reflected:_ `name`/`output` descriptions.
 5. **`exec` vs `run`.** `exec` = a single shell command; `run` = a script in a
-   named language/interpreter. `run.language` now defaults to **`bash`**. *Reflected:*
+   named language/interpreter. `run.language` now defaults to **`bash`**. _Reflected:_
    `runWith.language` default + descriptions.
 6. **Provider contract is a separate schema.** `bootstrap`/`deploy`/`clean`/`destroy`
    live in [`tmx-provider.schema.json`](./tmx-provider.schema.json) with an optional
-   `optionsSchema`. *Reflected:* new schema + example.
+   `optionsSchema`. _Reflected:_ new schema + example.
 7. **Secrets auto-masked, opt-in per task.** Secrets are masked in all output; a task
-   declares the secret names it needs unmasked via its `secrets` array. *Reflected:*
+   declares the secret names it needs unmasked via its `secrets` array. _Reflected:_
    task `secrets` array + context/secret descriptions.
 8. **Flows declare input variables.** A Flow may declare `inputs` (name → spec with
    optional `type`/`description`/`required`/`default`), supplied at invocation from the
@@ -152,7 +152,7 @@ These were open questions in the first draft; now answered and reflected in the 
    a call site is standardised on an `inputs` object (renamed from the earlier `input`)
    across `flowWith`, lifecycle `hook` `{use, …}` bodies, and the provider manifest's
    `method` `{use, …}` body. Inputs are read inside the Flow via `${{ inputs.NAME }}`.
-   *Reflected:* `flow.inputs` + new `inputSpec` def; `input` → `inputs` at every flow
+   _Reflected:_ `flow.inputs` + new `inputSpec` def; `input` → `inputs` at every flow
    call site (core + provider schemas) and in the examples.
 
 ### Interpretation notes (flag if you'd prefer otherwise)
@@ -168,11 +168,14 @@ These were open questions in the first draft; now answered and reflected in the 
 
 ## Still open
 
-- Does `change` fire on *every* state mutation (per task) or only on externally visible
+- Does `change` fire on _every_ state mutation (per task) or only on externally visible
   changes? Affects hook-storm potential.
+  A: Fires at the end of each task, _if_ the state changes (ie if a task is skipped it won't fire)
 - Secret `provider` backends (`aws-sm`, `vault`, …) — enumerate a supported set, or
   keep open?
+  A: Keep open for now.
 - Versioning: should `version`/schema `$id` carry a spec version for forward-compat?
+  A: Yes, but no need to set until first pass spec is ready to go.
 
 ## Validating locally
 

@@ -94,7 +94,7 @@ tasks:
     with:
       assertions:
         - actual: "${{ tasks.upload.status }}"
-          operator: eq
+          matcher: toBe
           expected: 200
           message: upload should succeed
 

@@ -119,7 +119,7 @@ execution — the only control flow is skipping a task via its `if` condition.
 | `file` | Read/write files | `operation`* (read/write/append/delete/copy/move/exists), `path`*, `content`, `encoding`, `destination` |
 | `store` | S3-compatible object storage | `operation`* (get/put/delete/list/head), `bucket`*, `key`, `endpoint`, `region`, `content`, `contentType`, `credentials` |
 | `chat-completion` | Call an LLM (ChatCompletions spec) | `model`*, `messages`*, `apiUrl`, `baseUrl`, `apiKey`, `temperature`, `maxTokens`, `topP`, `stream`, `tools`, `responseFormat` |
-| `assert` | Assert values | `assertions`* — each `{ actual, operator, expected?, message? }` |
+| `assert` | Assert values | `assertions`* — each `{ actual, matcher, expected?, not?, message? }` |
 | `flow` | Import another Flow as a task | `use`* (reference), `inputs` |
 
 <sub>\* required</sub>
@@ -128,8 +128,11 @@ execution — the only control flow is skipping a task via its `if` condition.
 script/program in a named language or interpreter (`python`, `node`, `ruby`, `bash`, …),
 defaulting to `bash`, via either inline `script` or a `file` path.
 
-**Assertions** use a structured operator set: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`,
-`contains`, `matches`, `exists`, `notExists`.
+**Assertions** use [Vitest `expect` matchers](https://vitest.dev/api/expect.html) —
+`expect(actual).matcher(expected)`. A representative subset: `toBe`, `toEqual`,
+`toContain`, `toMatch`, `toBeGreaterThan`, `toHaveProperty`, `toBeTruthy`,
+`toBeInstanceOf`, `toBeCloseTo`, `toBeOneOf`. Set `not: true` to negate a matcher
+(Vitest's `.not` modifier).
 
 **User-defined tasks** are implemented as Flows imported via the `flow` task type — `use`
 references the Flow and `inputs` supplies the imported Flow's declared [input

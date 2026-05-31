@@ -298,17 +298,51 @@
     },
 
     "assertion": {
+      "title": "Assertion",
+      "description": "A single assertion modelled on Vitest's `expect` API (https://vitest.dev/api/expect.html): `expect(actual).matcher(expected)`. Vitest's `.not` modifier (`expect(actual).not.matcher(...)`) maps to `not: true`. Only value matchers are supported; mock- and promise-only matchers (toHaveBeenCalled, resolves, rejects, …) are excluded as they do not apply to asserting plain values.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["actual", "operator"],
+      "required": ["actual", "matcher"],
       "properties": {
-        "actual": { "description": "Value or expression (resolved against Pipeline state) to test." },
-        "operator": {
+        "actual": { "description": "The value or expression under test — typically a `${{ ... }}` reference resolved against the Pipeline state. Corresponds to the argument of `expect(actual)`." },
+        "matcher": {
           "type": "string",
-          "enum": ["eq", "ne", "gt", "gte", "lt", "lte", "contains", "matches", "exists", "notExists"]
+          "description": "The Vitest `expect` matcher to apply (see https://vitest.dev/api/expect.html). The assertion holds when `expect(actual).matcher(expected)` passes; the `.not` modifier is expressed via `not: true`.",
+          "enum": [
+            "toBe",
+            "toEqual",
+            "toStrictEqual",
+            "toBeTruthy",
+            "toBeFalsy",
+            "toBeNull",
+            "toBeUndefined",
+            "toBeDefined",
+            "toBeNaN",
+            "toBeTypeOf",
+            "toBeInstanceOf",
+            "toBeGreaterThan",
+            "toBeGreaterThanOrEqual",
+            "toBeLessThan",
+            "toBeLessThanOrEqual",
+            "toBeCloseTo",
+            "toContain",
+            "toContainEqual",
+            "toHaveLength",
+            "toHaveProperty",
+            "toMatch",
+            "toMatchObject",
+            "toBeOneOf",
+            "toThrow",
+            "toSatisfy"
+          ]
         },
-        "expected": { "description": "Comparison value. Not required for `exists`/`notExists`." },
-        "message": { "type": "string", "description": "Failure message." }
+        "not": {
+          "type": "boolean",
+          "default": false,
+          "description": "Negate the matcher, mirroring Vitest's `.not` modifier (`expect(actual).not.matcher(...)`). When true, the assertion holds when the matcher would otherwise fail."
+        },
+        "expected": { "description": "Argument passed to the matcher. Omitted for unary matchers (`toBeTruthy`, `toBeFalsy`, `toBeNull`, `toBeUndefined`, `toBeDefined`, `toBeNaN`). For matchers that take multiple arguments (e.g. `toHaveProperty(path, value)`, `toBeCloseTo(number, precision)`), supply an array of those arguments. Any JSON type." },
+        "message": { "type": "string", "description": "Custom failure message reported when the assertion does not hold." }
       }
     },
 

@@ -81,7 +81,7 @@
       "type": "assert",
       "with": {
         "assertions": [
-          { "actual": "${{ tasks.upload.status }}", "operator": "eq", "expected": 200, "message": "upload should succeed" }
+          { "actual": "${{ tasks.upload.status }}", "matcher": "toBe", "expected": 200, "message": "upload should succeed" }
         ]
       }
     },
