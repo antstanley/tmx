@@ -1,0 +1,32 @@
+kind = "flow"
+name = "typed-output"
+description = "Declaring a task's output shape with `produces` (a JSON Schema) lets a loader statically lint downstream `${{ tasks.NAME.field }}` references before the Flow runs, drive editor autocomplete, and optionally check at runtime that the output conforms. It has no effect on execution."
+
+[[tasks]]
+name = "version"
+type = "run"
+
+[tasks.produces]
+type = "object"
+required = [
+    "tag",
+    "sha",
+]
+
+[tasks.produces.properties.tag]
+type = "string"
+
+[tasks.produces.properties.sha]
+type = "string"
+pattern = "^[0-9a-f]{7,40}$"
+
+[tasks.with]
+language = "bash"
+script = "echo \"{\\\"tag\\\":\\\"v1.2.3\\\",\\\"sha\\\":\\\"$(git rev-parse --short HEAD)\\\"}\"\n"
+
+[[tasks]]
+name = "tag-release"
+type = "exec"
+
+[tasks.with]
+command = "gh release create \"${{ tasks.version.tag }}\" --target \"${{ tasks.version.sha }}\""

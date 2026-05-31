@@ -91,8 +91,10 @@ and binary becomes `{ "blob": <bytes> }`. Each task's output is merged into the 
 state **under the task's `name`** (`state[name] = output`; override the key with
 `output`), making it available to subsequent tasks.
 
-Tasks run **in sequence**, one after another. There is no branching, looping or parallel
-execution — the only control flow is skipping a task via its `if` condition.
+Tasks run **in sequence**, one after another. There is no branching or DAG (`needs`); control
+flow is deliberately minimal — a per-task `if` skip, plus the **bounded iteration** of the
+[`map`](#bounded-fan-out-map) task, which fans a single inner task out over a collection
+(optionally with bounded concurrency) without changing the order of the surrounding list.
 
 A Flow's `tasks` may be given in **either** of two forms:
 
@@ -151,6 +153,7 @@ The shorthand is **map-only** — array items must always be full task objects.
 | `contextStrategy` | `merge` (default) or `replace` — how task context combines with inherited context. |
 | `contextPrecedence` | `local` (default) or `inherited` — who wins a key collision during `merge`. |
 | `output` | Override the Pipeline-state key for this task's output (defaults to `name`). |
+| `produces` | Optional JSON Schema for this task's output — enables static linting of downstream `${{ tasks.NAME.field }}` references, autocomplete, and an optional runtime conformance check (see [Typed task output](#typed-task-output-produces)). |
 | `continueOnError` | `false` (default) aborts the Pipeline on failure; `true` records the error and continues. |
 | `with` | Type-specific configuration (shape determined by `type`). |
 
@@ -164,7 +167,9 @@ The shorthand is **map-only** — array items must always be full task objects.
 | `file` | Read/write files | `operation`* (read/write/append/delete/copy/move/exists), `path`*, `content`, `encoding`, `destination` |
 | `store` | S3-compatible object storage | `operation`* (get/put/delete/list/head), `bucket`*, `key`, `endpoint`, `region`, `content`, `contentType`, `credentials` |
 | `chat-completion` | Call an LLM (ChatCompletions spec) | `model`*, `messages`*, `apiUrl`, `apiKey`, `temperature`, `maxTokens`, `topP`, `stream`, `tools`, `responseFormat` |
-| `assert` | Assert values | `assertions`* — each `{ actual, matcher, expected?, not?, message? }` |
+| `assert` | Assert values (boolean gate) | `assertions`* — each `{ actual, matcher, expected?, not?, message? }` |
+| `map` | Bounded fan-out over a collection | `items`*, `task`*, `as`, `concurrency`, `continueOnError` |
+| `eval` | Score a subject over a dataset (measure) | `scorers`*, `subject`, `dataset`, `concurrency`, `threshold` |
 | `flow` | Import another Flow as a task | `use`* (reference), `inputs` |
 
 <sub>\* required</sub>
@@ -177,11 +182,128 @@ defaulting to `bash`, via either inline `script` or a `file` path.
 `expect(actual).matcher(expected)`. A representative subset: `toBe`, `toEqual`,
 `toContain`, `toMatch`, `toBeGreaterThan`, `toHaveProperty`, `toBeTruthy`,
 `toBeInstanceOf`, `toBeCloseTo`, `toBeOneOf`. Set `not: true` to negate a matcher
-(Vitest's `.not` modifier).
+(Vitest's `.not` modifier). `assert` is a **boolean gate**: the task fails if any assertion
+does not hold (aborting the Pipeline unless `continueOnError`). To *measure* quality with
+continuous scores over a dataset rather than gate on a single value, use the
+[`eval`](#evaluations-eval) task — its scorers reuse these same matchers.
 
 **User-defined tasks** are implemented as Flows imported via the `flow` task type — `use`
 references the Flow and `inputs` supplies the imported Flow's declared [input
 variables](#flow-inputs).
+
+#### Bounded fan-out (`map`)
+
+The one deliberate exception to sequential-only execution. A `map` task runs a single inner
+`task` (a full task object, or a `flow` import for multi-step work) **once per element** of a
+collection, then collects the per-element outputs into an **array** under the task's name. The
+surrounding task list still runs strictly in order — only the `map` task fans out internally.
+
+| Field | Description |
+| --- | --- |
+| `items` | **Required.** Array, or a `${{ ... }}` expression resolving to an array. |
+| `task` | **Required.** The task/`flow` run for each element. |
+| `as` | Alias the current element is bound under inside `task` (default `item`; read as `${{ item.* }}`, index as `${{ item.index }}`). |
+| `concurrency` | Max elements processed at once (default `1` = in order). Output array always follows item order. |
+| `continueOnError` | `true` records a failing element's error in its slot and continues; `false` (default) aborts on the first failure. |
+
+```yaml
+- name: deploy-regions
+  type: map
+  with:
+    items: "${{ inputs.regions }}"
+    as: region
+    concurrency: 3
+    task:
+      type: flow
+      with:
+        use: ./deploy/region.yaml
+        inputs: { region: "${{ region }}" }
+# → state["deploy-regions"] = [ <output per region>, ... ]
+```
+
+This is what makes test matrices and dataset-driven [evals](#evaluations-eval) expressible. It
+is **bounded** iteration only — there is still no general branching, DAG, or unbounded
+parallelism. See [`docs/examples/map-fanout.yaml`](./docs/examples/map-fanout.yaml).
+
+#### Evaluations (`eval`)
+
+`eval` **measures** the quality of a `subject`'s output against one or more **scorers**,
+optionally over a `dataset` of cases, and emits a **scorecard** (per-case scores + aggregate
+metrics). It is the *measure* counterpart to `assert`'s *gate*: scores are continuous (`0..1`)
+and the task only fails when a `threshold` policy is set and not met.
+
+| Field | Description |
+| --- | --- |
+| `scorers` | **Required.** One or more [scorers](#scorers) applied to each case's output. |
+| `subject` | The task/`flow` under test, run once per case; its output is scored (referenced as `${{ output }}`). Omit to score values already in state. |
+| `dataset` | Array of case objects (or a `${{ ... }}`/reference resolving to one); each is bound as `${{ case }}`. Omit to run once. |
+| `concurrency` | Max cases evaluated at once (same bounded fan-out as `map`; default `1`). |
+| `threshold` | Gating policy `{ metric, min, passScore? }` — without it, `eval` only reports. |
+
+Output is merged under the task name:
+
+```jsonc
+{
+  "cases":   [ { "case": {…}, "output": …, "scores": { "quality": 0.9 }, "score": 0.9, "passed": true } ],
+  "summary": { "mean": 0.86, "weightedMean": 0.88, "passRate": 0.95, "p50": 0.9, "count": 20 },
+  "passed":  true
+}
+```
+
+##### Scorers
+
+Each scorer yields a score in `0..1`; a case's score is the weighted mean of its scorers.
+Three kinds, selected by `type`:
+
+| `type` | Scores by | Key fields |
+| --- | --- | --- |
+| `matcher` (default) | A Vitest matcher → `1.0` if it passes (respecting `not`), else `0.0` | `matcher`, `expected`, `not` |
+| `llmRubric` | An LLM judging the output against a rubric (model-graded) | `rubric`, `model`, `apiUrl`, `apiKey` |
+| `exec` / `run` | A command/script that emits a number (`{ "score": 0.9 }` or a bare number) | `with` |
+
+Common to all: `name`, optional `actual` (defaults to `${{ output }}`), `weight` (default `1`).
+The `matcher` scorer reuses the **same matcher vocabulary as [`assert`](#tasks)** — matchers are
+the shared primitive; `assert` consumes them as gates, `eval` consumes them as scorers.
+
+```yaml
+- name: grade-assistant
+  type: eval
+  with:
+    dataset: "${{ inputs.cases }}"
+    subject:
+      type: chat-completion
+      with: { model: claude-opus-4-8, messages: [ { role: user, content: "${{ case.input }}" } ] }
+    scorers:
+      - { name: mentions-expected, matcher: toContain, expected: "${{ case.expected }}" }
+      - { name: quality, type: llmRubric, model: claude-opus-4-8,
+          rubric: "Correct, concise, polite?", weight: 2 }
+    threshold: { metric: weightedMean, min: 0.8 }
+```
+
+See [`docs/examples/eval.yaml`](./docs/examples/eval.yaml).
+
+#### Typed task output (`produces`)
+
+Any task may declare a `produces` JSON Schema describing the shape of the JSON it merges into
+the Pipeline state. It is **purely declarative** — it has no effect on execution — but it lets a
+loader **statically lint** downstream `${{ tasks.NAME.field }}` references before a run (catching
+typos like `tasks.build.artifcat`), power editor autocomplete, and optionally check at runtime
+that a task's output conforms.
+
+```yaml
+- name: build
+  type: run
+  produces:
+    type: object
+    required: [artifact, sha]
+    properties:
+      artifact: { type: string }
+      sha:      { type: string }
+  with: { language: bash, file: ./build.sh }
+# `${{ tasks.build.artifact }}` is now checkable; `${{ tasks.build.artifcat }}` fails lint
+```
+
+See [`docs/examples/typed-output.yaml`](./docs/examples/typed-output.yaml).
 
 ### Flow inputs
 
@@ -304,9 +426,14 @@ against the chosen provider), and the four required lifecycle **methods**:
 
 Each method is a subcommand string (binary providers), a Flow reference (or a
 `{ use, inputs }` import), or an inline set of TMX tasks — an ordered array or a name-keyed
-map, with the same `exec` string shorthand. An environment's `provider` field names the
+map, with the same `exec` string shorthand. Because those inline tasks reference the same task
+definition as a Flow, a provider can use **every task type** — including
+[`map`](#bounded-fan-out-map), [`eval`](#evaluations-eval) and the
+[`produces`](#typed-task-output-produces) contract. An environment's `provider` field names the
 manifest to use. See
-[`docs/examples/provider-manifest.yaml`](./docs/examples/provider-manifest.yaml).
+[`docs/examples/provider-manifest.yaml`](./docs/examples/provider-manifest.yaml), whose
+`bootstrap` pre-pulls images with a `map` and whose `deploy` declares its container-id output via
+`produces`.
 
 ## Interpolation
 
@@ -345,10 +472,12 @@ This repo uses **Jujutsu (jj)**, which does not run Git hooks. So:
 ## Repository layout
 
 ```
+CHANGELOG.md                 # spec version history (Keep a Changelog)
 docs/
   tmx.schema.json            # core schema (Flow/Task/Context/Environment)
   tmx-provider.schema.json   # provider manifest schema
   SCHEMA.md                  # design decisions + open questions
+  comparison.md              # task/workflow-runner landscape + TMX positioning
   examples/                  # validated examples in all four formats
 scripts/
   validate.sh                # validate schemas + examples

@@ -10,11 +10,40 @@ methods:
       type: exec
       with:
         command: docker network create tmx-net || true
-  deploy:
-    - name: start-container
-      type: exec
+    # Method bodies $ref the task definition in tmx.schema.json, so every task type is
+    # available here — including `map`: pre-pull base images with bounded concurrency.
+    - name: prepull-images
+      type: map
       with:
-        command: docker run -d --network tmx-net --name ${{ run.id }} ${{ environment.image }}
+        items: ["alpine:3", "node:22-alpine"]
+        as: image
+        concurrency: 2
+        task:
+          type: exec
+          with:
+            command: docker pull ${{ image }}
+  deploy:
+    # `produces` declares this task's output shape so `${{ tasks.start-container.containerId }}`
+    # is statically checkable, here and in any Flow that consumes the provider's output.
+    - name: start-container
+      type: run
+      produces:
+        type: object
+        required: [containerId]
+        properties:
+          containerId: { type: string }
+      with:
+        language: bash
+        script: |
+          id=$(docker run -d --network tmx-net --name ${{ run.id }} ${{ environment.image }})
+          echo "{\"containerId\":\"$id\"}"
+    - name: verify-started
+      type: assert
+      with:
+        assertions:
+          - actual: ${{ tasks.start-container.containerId }}
+            matcher: toBeDefined
+            message: container should have started
   clean:
     - name: stop-container
       type: exec

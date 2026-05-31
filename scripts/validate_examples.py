@@ -144,19 +144,30 @@ for t in targets:
     for e in errors[:6]:
         print("     -", list(e.path), e.message)
 
-# ---- 3. cross-format parity for single-file-flow.* ----
+# ---- 3. cross-format parity: any (dir, stem) group with >1 format must be identical ----
 if not explicit:
-    base_path = EXAMPLES / "single-file-flow.json"
-    if base_path.exists():
-        base = load_instance(base_path)
-        for g in sorted(EXAMPLES.glob("single-file-flow.*")):
-            if g == base_path:
+    groups: dict = {}
+    for p in targets:
+        groups.setdefault((p.parent, p.stem), []).append(p)
+    for (_parent, _stem), members in sorted(groups.items()):
+        if len(members) < 2:
+            continue
+        members = sorted(members)
+        # reference: prefer the .json member (canonical), else the first by name
+        ref = next((m for m in members if m.suffix == ".json"), members[0])
+        try:
+            ref_doc = load_instance(ref)
+        except Exception as exc:  # noqa: BLE001
+            report(False, f"parity       {rel(ref)} :: reference parse failed :: {exc}")
+            continue
+        for m in members:
+            if m == ref:
                 continue
             try:
-                same = load_instance(g) == base
+                same = load_instance(m) == ref_doc
             except Exception:  # noqa: BLE001
                 same = False
-            report(same, f"parity       {g.name} == single-file-flow.json")
+            report(same, f"parity       {m.name} == {ref.name}")
 
 print()
 if failures:

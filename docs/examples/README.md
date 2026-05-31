@@ -21,6 +21,18 @@ It exercises every built-in task type (`exec`, `run`, `fetch`, `file`, `store`,
 `chat-completion`, `assert`, `flow`), inline environment + context, lifecycle hooks,
 an `if` skip, and a per-task `secrets` declaration.
 
+## Bounded fan-out, evaluations, and typed output
+
+Worked examples for the newer task types and the `produces` contract. Each is provided in
+**YAML, JSON and TOML**, kept semantically identical (parity is asserted by the validator, as
+for `single-file-flow.*`):
+
+| Example (`.yaml` / `.json` / `.toml`) | Demonstrates |
+| --- | --- |
+| [`map-fanout`](./map-fanout.yaml) | `map` — bounded fan-out of a per-item sub-flow over a collection, with `concurrency` and `continueOnError`; plus a `produces` contract |
+| [`eval`](./eval.yaml) | `eval` — scoring an LLM `subject` over a `dataset` with matcher + `llmRubric` scorers and a `threshold`, then gating with `assert` |
+| [`typed-output`](./typed-output.yaml) | `produces` — declaring a task's output JSON Schema so downstream `${{ tasks.NAME.field }}` references can be linted |
+
 ## Standalone artifacts (folder layout)
 
 The README's "standalone files in a folder" style, with mixed formats inheriting in a

@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://tmx.dev/schemas/tmx-provider.schema.json",
+  "$id": "https://tmx.dev/schemas/0.2.0/tmx-provider.schema.json",
+  "$comment": "TMX spec version 0.2.0 (draft). Versioned in lockstep with tmx.schema.json. Provider method bodies $ref the task definition in tmx.schema.json, so they inherit every task type — including `map`, `eval` and the `produces` contract — automatically.",
   "title": "TMX Environment Provider Manifest",
   "description": "Schema for an Environment Provider manifest. A provider materialises the `environment` block of a Flow into real resources. It is implemented either as a standalone binary (invoked by the core TMX CLI) or as a Flow that implements the standard methods. Every provider must implement bootstrap, deploy, clean and destroy.",
   "type": "object",
@@ -48,7 +49,7 @@
         {
           "type": "array",
           "description": "Inline, ordered list of TMX tasks. Items conform to the task schema in tmx.schema.json.",
-          "items": { "$ref": "https://tmx.dev/schemas/tmx.schema.json#/$defs/task" },
+          "items": { "$ref": "https://tmx.dev/schemas/0.2.0/tmx.schema.json#/$defs/task" },
           "minItems": 1
         },
         {
@@ -58,7 +59,7 @@
           "minProperties": 1,
           "additionalProperties": {
             "oneOf": [
-              { "$ref": "https://tmx.dev/schemas/tmx.schema.json#/$defs/task" },
+              { "$ref": "https://tmx.dev/schemas/0.2.0/tmx.schema.json#/$defs/task" },
               {
                 "type": "string",
                 "description": "Shorthand for an exec task: the string is run as a shell command (equivalent to { type: 'exec', with: { command: <string> } }). The map key is the task name."

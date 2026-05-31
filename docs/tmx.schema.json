@@ -1,6 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://tmx.dev/schemas/tmx.schema.json",
+  "$id": "https://tmx.dev/schemas/0.2.0/tmx.schema.json",
+  "$comment": "TMX spec version 0.2.0 (draft). The spec version is carried in the schema $id path so versions can coexist for forward-compatibility; bumped from the implicit 0.1.0 by the addition of the `map` and `eval` task types and the `produces` typed-output contract.",
   "title": "TMX Flow",
   "description": "Schema for a TMX Flow document. A Flow is the static definition of an Environment, a Context and a list of Tasks. Only `tasks` is required. Environment and Context may be inlined as objects or referenced by path/name so they can be reused across Flows. Standalone artifact files (environment.*, context.*, task-N.*) validate against the corresponding sub-schemas under `$defs` (`environment`, `context`, `task`). This document targets YAML/JSON/JSONC/TOML sources after they are parsed to a JSON model.",
   "type": "object",
@@ -68,7 +69,7 @@
 
     "taskList": {
       "title": "Task list",
-      "description": "An ordered list of tasks. Tasks run in sequence, one after another. There is no branching, looping or parallel execution; a task may be skipped via its `if` condition.",
+      "description": "An ordered list of tasks. Tasks run in sequence, one after another. There is no branching or DAG; control flow is limited to a task's `if` skip and the bounded iteration of a `map` task (which fans its inner task out over a collection but does not affect the order of the surrounding list).",
       "type": "array",
       "minItems": 1,
       "items": { "$ref": "#/$defs/task" }
@@ -76,7 +77,7 @@
 
     "tasks": {
       "title": "Task collection",
-      "description": "A set of tasks, expressed as EITHER an ordered array OR a name-keyed map. Array form (`taskList`): tasks run in the order they appear; each item is a full task object (no string shorthand). Map form: a JSON object whose property names are the task names and whose values are either a full task object (which need not repeat `name`) or a string shorthand for an `exec` task; tasks run in the source document's key order (the order keys appear in the YAML/JSON/JSONC/TOML file). Both forms run in sequence — there is no branching, looping or parallel execution.",
+      "description": "A set of tasks, expressed as EITHER an ordered array OR a name-keyed map. Array form (`taskList`): tasks run in the order they appear; each item is a full task object (no string shorthand). Map form: a JSON object whose property names are the task names and whose values are either a full task object (which need not repeat `name`) or a string shorthand for an `exec` task; tasks run in the source document's key order (the order keys appear in the YAML/JSON/JSONC/TOML file). Both forms run in sequence — there is no branching or DAG; the only control flow is a task's `if` skip and the bounded iteration of a `map` task.",
       "oneOf": [
         { "$ref": "#/$defs/taskList" },
         {
@@ -118,7 +119,7 @@
         "type": {
           "description": "The task implementation to run. One of the built-in types, or `flow` to import another Flow as a user-defined task.",
           "type": "string",
-          "enum": ["exec", "run", "fetch", "file", "store", "chat-completion", "assert", "flow"]
+          "enum": ["exec", "run", "fetch", "file", "store", "chat-completion", "assert", "map", "eval", "flow"]
         },
         "if": {
           "type": "string",
@@ -154,6 +155,10 @@
           "type": "string",
           "description": "Optional override for the Pipeline-state key this task's output is merged under. Defaults to the task `name`."
         },
+        "produces": {
+          "type": "object",
+          "description": "Optional JSON Schema (Draft 2020-12) describing the shape of this task's output — the JSON merged into the Pipeline state under the task `name` (or `output`). Purely declarative: it lets a loader statically lint downstream `${{ tasks.NAME.field }}` references before a run, drive editor autocomplete, and optionally check at runtime that the task's output conforms. Has no effect on execution."
+        },
         "continueOnError": {
           "type": "boolean",
           "default": false,
@@ -171,6 +176,8 @@
         { "if": { "properties": { "type": { "const": "store" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/storeWith" } }, "required": ["with"] } },
         { "if": { "properties": { "type": { "const": "chat-completion" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/chatCompletionWith" } }, "required": ["with"] } },
         { "if": { "properties": { "type": { "const": "assert" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/assertWith" } }, "required": ["with"] } },
+        { "if": { "properties": { "type": { "const": "map" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/mapWith" } }, "required": ["with"] } },
+        { "if": { "properties": { "type": { "const": "eval" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/evalWith" } }, "required": ["with"] } },
         { "if": { "properties": { "type": { "const": "flow" } } }, "then": { "properties": { "with": { "$ref": "#/$defs/flowWith" } }, "required": ["with"] } }
       ]
     },
@@ -330,37 +337,7 @@
       "required": ["actual", "matcher"],
       "properties": {
         "actual": { "description": "The value or expression under test — typically a `${{ ... }}` reference resolved against the Pipeline state. Corresponds to the argument of `expect(actual)`." },
-        "matcher": {
-          "type": "string",
-          "description": "The Vitest `expect` matcher to apply (see https://vitest.dev/api/expect.html). The assertion holds when `expect(actual).matcher(expected)` passes; the `.not` modifier is expressed via `not: true`.",
-          "enum": [
-            "toBe",
-            "toEqual",
-            "toStrictEqual",
-            "toBeTruthy",
-            "toBeFalsy",
-            "toBeNull",
-            "toBeUndefined",
-            "toBeDefined",
-            "toBeNaN",
-            "toBeTypeOf",
-            "toBeInstanceOf",
-            "toBeGreaterThan",
-            "toBeGreaterThanOrEqual",
-            "toBeLessThan",
-            "toBeLessThanOrEqual",
-            "toBeCloseTo",
-            "toContain",
-            "toContainEqual",
-            "toHaveLength",
-            "toHaveProperty",
-            "toMatch",
-            "toMatchObject",
-            "toBeOneOf",
-            "toThrow",
-            "toSatisfy"
-          ]
-        },
+        "matcher": { "$ref": "#/$defs/matcherName" },
         "not": {
           "type": "boolean",
           "default": false,
@@ -368,6 +345,156 @@
         },
         "expected": { "description": "Argument passed to the matcher. Omitted for unary matchers (`toBeTruthy`, `toBeFalsy`, `toBeNull`, `toBeUndefined`, `toBeDefined`, `toBeNaN`). For matchers that take multiple arguments (e.g. `toHaveProperty(path, value)`, `toBeCloseTo(number, precision)`), supply an array of those arguments. Any JSON type." },
         "message": { "type": "string", "description": "Custom failure message reported when the assertion does not hold." }
+      }
+    },
+
+    "matcherName": {
+      "title": "Matcher",
+      "description": "A Vitest `expect` matcher name (see https://vitest.dev/api/expect.html), the shared value-matching primitive. Used by `assert` (as a pass/fail gate) and by an `eval` matcher scorer (scoring 1.0 when it passes, 0.0 otherwise). Only value matchers are included; mock- and promise-only matchers (toHaveBeenCalled, resolves, rejects, …) are excluded as they do not apply to asserting plain values.",
+      "type": "string",
+      "enum": [
+        "toBe",
+        "toEqual",
+        "toStrictEqual",
+        "toBeTruthy",
+        "toBeFalsy",
+        "toBeNull",
+        "toBeUndefined",
+        "toBeDefined",
+        "toBeNaN",
+        "toBeTypeOf",
+        "toBeInstanceOf",
+        "toBeGreaterThan",
+        "toBeGreaterThanOrEqual",
+        "toBeLessThan",
+        "toBeLessThanOrEqual",
+        "toBeCloseTo",
+        "toContain",
+        "toContainEqual",
+        "toHaveLength",
+        "toHaveProperty",
+        "toMatch",
+        "toMatchObject",
+        "toBeOneOf",
+        "toThrow",
+        "toSatisfy"
+      ]
+    },
+
+    "mapWith": {
+      "title": "Map task",
+      "description": "Bounded fan-out. Runs a single inner task (or imported `flow`) once per element of a collection, then collects the per-element outputs back into the Pipeline state as an array under this task's name. This is the only construct that runs work non-linearly: the surrounding Flow's task list still executes strictly in sequence, and there is no general branching, DAG/`needs`, or unbounded parallelism — only this bounded iteration over a declared collection. Output: `state[name]` is an array, one entry per item, in item order (regardless of completion order).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items", "task"],
+      "properties": {
+        "items": {
+          "description": "The collection to iterate. An inline array, or a `${{ ... }}` expression resolving to an array in the Pipeline state/inputs. Each element is bound for the inner task under the alias given by `as` (default `item`); the zero-based index is available as `${{ <as>.index }}`.",
+          "oneOf": [
+            { "type": "array" },
+            { "type": "string", "description": "A `${{ ... }}` expression resolving to an array." }
+          ]
+        },
+        "as": {
+          "type": "string",
+          "default": "item",
+          "description": "Name the current element is bound under inside the inner task — read as `${{ item.* }}` (or `${{ <as>.* }}`). Defaults to `item`."
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "Maximum number of items processed at once. Defaults to 1 (strictly in order, one at a time). Values > 1 permit bounded parallelism; the collected output array always follows item order regardless of completion order."
+        },
+        "continueOnError": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, an item whose inner task fails records the error in that item's output slot and iteration continues; when false (default) the first failing item aborts the map (and, per the task envelope, the Pipeline unless the map task itself sets `continueOnError`)."
+        },
+        "task": {
+          "description": "The work to run for each item: a single task object, or a `flow` import (`type: flow`) for multi-step per-item work. Inside it, the current element is available as `${{ item }}` (or the `as` alias) and prior Pipeline state as `${{ tasks.NAME.field }}`.",
+          "$ref": "#/$defs/task"
+        }
+      }
+    },
+
+    "evalWith": {
+      "title": "Eval task",
+      "description": "Evaluate the output of a subject against one or more scorers, optionally over a dataset of cases, and emit a scorecard. Distinct from `assert`: `assert` is a deterministic boolean GATE on a known value that aborts on failure; `eval` MEASURES quality — it produces continuous scores in [0,1] and aggregate metrics, and only fails the task when a `threshold` policy is set and not met. Deterministic scorers reuse the same matcher vocabulary as `assert`. Output: `state[name] = { cases: [ { case, output, scores: { <scorer>: <0..1> }, score, passed } ], summary: { mean, weightedMean, passRate, p50, count }, passed }`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scorers"],
+      "properties": {
+        "subject": {
+          "description": "The thing under evaluation, run once per dataset case (or once when there is no dataset). A single task object or a `flow` import; its output is the value scored (referenced in scorers as `${{ output }}`). When omitted, scorers evaluate values already in the Pipeline state (e.g. `${{ tasks.answer.message }}`).",
+          "$ref": "#/$defs/task"
+        },
+        "dataset": {
+          "description": "Optional set of cases to evaluate. An inline array of case objects, or a `${{ ... }}` expression / reference resolving to one. Each case is bound as `${{ case }}` for the subject and scorers (e.g. `${{ case.input }}`, `${{ case.expected }}`). With no dataset, the eval runs once.",
+          "oneOf": [
+            { "type": "array", "items": { "type": "object" } },
+            { "type": "string", "description": "A `${{ ... }}` expression or reference resolving to an array of case objects." }
+          ]
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "Maximum number of dataset cases evaluated at once (same bounded fan-out as the `map` task). Defaults to 1."
+        },
+        "scorers": {
+          "type": "array",
+          "minItems": 1,
+          "description": "One or more scorers applied to each case's subject output. Each yields a score in [0,1]; a case's score is the weighted mean of its scorers' scores.",
+          "items": { "$ref": "#/$defs/scorer" }
+        },
+        "threshold": { "$ref": "#/$defs/evalThreshold" }
+      }
+    },
+
+    "scorer": {
+      "title": "Scorer",
+      "description": "A single grader applied to a subject output, yielding a score in [0,1]. Kinds (via `type`): `matcher` (default) reuses the `assert` matcher vocabulary, scoring 1.0 when the matcher passes and 0.0 otherwise; `llmRubric` has an LLM judge the output against a rubric and return a normalised score; `exec`/`run` run a command/script that emits a numeric score (JSON `{ \"score\": <0..1> }` or a bare number on stdout). `weight` sets the scorer's contribution to a case's weighted mean.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "description": "Identifier for this scorer; appears in the scorecard under `scores`." },
+        "type": {
+          "type": "string",
+          "enum": ["matcher", "llmRubric", "exec", "run"],
+          "default": "matcher",
+          "description": "Scorer kind. Selects which of the fields below apply."
+        },
+        "actual": { "description": "Value to score. Defaults to the subject's output (`${{ output }}`); set to score a specific field, e.g. `${{ output.message }}`." },
+        "weight": { "type": "number", "exclusiveMinimum": 0, "default": 1, "description": "Relative weight in the weighted mean of a case's scorers." },
+        "threshold": { "type": "number", "minimum": 0, "maximum": 1, "description": "Optional minimum score for THIS scorer to count as passing (informational; case pass/fail uses the case score and the eval `threshold`)." },
+        "matcher": { "$ref": "#/$defs/matcherName", "description": "For `type: matcher`. The Vitest matcher applied to `actual`; scores 1.0 when it passes (respecting `not`), else 0.0." },
+        "expected": { "description": "For `type: matcher`. Argument passed to the matcher (see `assertion.expected`). Any JSON type." },
+        "not": { "type": "boolean", "default": false, "description": "For `type: matcher`. Negate the matcher (Vitest `.not`)." },
+        "rubric": { "type": "string", "description": "For `type: llmRubric`. Instruction describing what a good output looks like; the judge scores the output against it and returns a value in [0,1]." },
+        "model": { "type": "string", "description": "For `type: llmRubric`. The judge model." },
+        "apiUrl": { "type": "string", "description": "For `type: llmRubric`. Full ChatCompletions endpoint URL for the judge." },
+        "apiKey": { "type": "string", "description": "For `type: llmRubric`. API key; typically references a context secret." },
+        "with": { "description": "For `type: exec`/`run`. Configuration matching `execWith`/`runWith`; the command/script must emit a score in [0,1]." }
+      }
+    },
+
+    "evalThreshold": {
+      "title": "Eval threshold",
+      "description": "Optional gating policy that turns eval scores into a pass/fail for the task. Without a threshold an `eval` task NEVER fails on score — it only reports, and the Flow decides what to do via `${{ tasks.NAME.summary.* }}` and a later `assert`/`if`. With a threshold, the task fails when the chosen metric falls below `min` (subject to the task's `continueOnError`).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min"],
+      "properties": {
+        "metric": {
+          "type": "string",
+          "enum": ["mean", "weightedMean", "passRate", "min", "p50", "p90"],
+          "default": "weightedMean",
+          "description": "Aggregate metric the threshold applies to. `passRate` is the fraction of cases whose score is at least `passScore`."
+        },
+        "min": { "type": "number", "minimum": 0, "maximum": 1, "description": "Minimum acceptable value of `metric`; below this the eval task fails." },
+        "passScore": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5, "description": "Per-case score at/above which a case counts as passing — used by the `passRate` metric and the scorecard's `passed` flags." }
       }
     },
 

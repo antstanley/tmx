@@ -1,0 +1,64 @@
+{
+  "kind": "flow",
+  "name": "deploy-to-regions",
+  "description": "Bounded fan-out with the `map` task: build once, then run a per-region sub-flow for every region, collecting each region's output into an array. The Flow's task list still runs strictly in sequence — only the `map` task fans out internally.",
+  "inputs": {
+    "regions": {
+      "type": "array",
+      "description": "Regions to deploy to.",
+      "default": [
+        "us-east-1",
+        "eu-west-1",
+        "ap-southeast-2"
+      ]
+    }
+  },
+  "tasks": [
+    {
+      "name": "build",
+      "type": "run",
+      "produces": {
+        "type": "object",
+        "required": [
+          "artifact"
+        ],
+        "properties": {
+          "artifact": {
+            "type": "string"
+          }
+        }
+      },
+      "with": {
+        "language": "bash",
+        "script": "npm run build\necho '{\"artifact\":\"dist.tgz\"}'\n"
+      }
+    },
+    {
+      "name": "deploy-regions",
+      "type": "map",
+      "with": {
+        "items": "${{ inputs.regions }}",
+        "as": "region",
+        "concurrency": 3,
+        "continueOnError": true,
+        "task": {
+          "type": "flow",
+          "with": {
+            "use": "./deploy/region.yaml",
+            "inputs": {
+              "region": "${{ region }}",
+              "artifact": "${{ tasks.build.artifact }}"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "report",
+      "type": "exec",
+      "with": {
+        "command": "echo \"deployed ${{ tasks.build.artifact }} across all regions\""
+      }
+    }
+  ]
+}

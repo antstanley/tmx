@@ -48,8 +48,8 @@ standalone file, point a validator at `#/$defs/<name>` while keeping the schema'
 
 Common envelope on every task: `kind?`, `name`, `description`, `type` (required),
 `if`, `secrets`, `context` + `contextStrategy` + `contextPrecedence`, `output`,
-`continueOnError`. Type-specific config lives under **`with`**, selected by `type`
-via a discriminated union:
+`produces?`, `continueOnError`. Type-specific config lives under **`with`**, selected
+by `type` via a discriminated union:
 
 | `type`            | `with` shape         | Purpose                                                   |
 | ----------------- | -------------------- | --------------------------------------------------------- |
@@ -59,13 +59,21 @@ via a discriminated union:
 | `file`            | `fileWith`           | Read/write files                                          |
 | `store`           | `storeWith`          | Read/write S3-compatible storage                          |
 | `chat-completion` | `chatCompletionWith` | Call an LLM (ChatCompletions spec)                        |
-| `assert`          | `assertWith`         | Assert values                                             |
+| `assert`          | `assertWith`         | Assert values (boolean gate)                              |
+| `map`             | `mapWith`            | Bounded fan-out of an inner task over a collection        |
+| `eval`            | `evalWith`           | Score a subject over a dataset (measurement + scorecard)  |
 | `flow`            | `flowWith`           | Import another Flow as a user-defined task                |
 
-Control flow is intentionally minimal per the README: tasks run **in sequence**, and
-the only branching is the per-task `if` skip (a JS-subset expression, truthy/falsy +
-strict equality). No loops, no parallelism, no `needs`. Each task's output is merged
-into the Pipeline state under its `name` (override with `output`).
+Control flow is intentionally minimal per the README: tasks run **in sequence**, the
+only branching is the per-task `if` skip (a JS-subset expression, truthy/falsy +
+strict equality), and there is no `needs`/DAG. The **one deliberate exception** is the
+`map` task, which performs *bounded* iteration — running its inner task once per element
+of a collection (optionally with bounded `concurrency`) and collecting the results — but
+this does not reorder the surrounding sequential task list, and there is still no general
+branching, DAG, or unbounded parallelism. Each task's output is merged into the Pipeline
+state under its `name` (override with `output`); a task may declare a `produces` JSON
+Schema describing that output so downstream `${{ tasks.NAME.field }}` references can be
+statically linted.
 
 **Secrets are opt-in per task.** All secrets are auto-masked in output everywhere; a
 task receives a secret unmasked only if it lists the secret's name in its `secrets`
@@ -99,8 +107,11 @@ chosen provider), and the four required `methods`: `bootstrap`, `deploy`, `clean
 `destroy`. Each method is a subcommand string (binary providers), a Flow reference, a
 `{ use, inputs }` Flow import, or an inline set of TMX tasks — an ordered array or a
 name-keyed map, with the same `exec` string shorthand, all `$ref`-ing the task definition
-in `tmx.schema.json`. An environment's `provider` field names the manifest to use. See
-[`examples/provider-manifest.yaml`](./examples/provider-manifest.yaml).
+in `tmx.schema.json`. Because they `$ref` that one definition, provider method bodies inherit
+the **full task model automatically** — including the `map` and `eval` task types and the
+`produces` contract added in 0.2.0 (verified: the example's `bootstrap` uses `map`, its `deploy`
+uses `produces`, and an `eval` method body validates). An environment's `provider` field names
+the manifest to use. See [`examples/provider-manifest.yaml`](./examples/provider-manifest.yaml).
 
 ## Design decisions (interpretations of the README)
 
@@ -188,6 +199,47 @@ These were open questions in the first draft; now answered and reflected in the 
    `baseUrl`. _Reflected:_ `chatCompletionWith.apiUrl` (the object stays open via
    `additionalProperties: true` for provider-specific params).
 
+## Competitiveness-pass additions
+
+Three task-model additions made during spec authoring to close gaps against shipping tools
+(local runners, CI matrices, Step Functions, and LLM-eval harnesses) while preserving the
+declarative, sequential-by-default identity. The rationale lives here; the shapes are in the
+schema and worked in [`examples/map-fanout.yaml`](./examples/map-fanout.yaml),
+[`examples/eval.yaml`](./examples/eval.yaml), and [`examples/typed-output.yaml`](./examples/typed-output.yaml).
+
+13. **`map` — bounded fan-out (the one concession to non-linear execution).** Testing and
+   evaluations are inherently "run this over N items," which strict sequential-only could not
+   express — an internal contradiction with the README's stated use cases. `map` runs a single
+   inner task (or `flow` import) once per element of `items`, binding each element under `as`
+   (default `item`), with optional bounded `concurrency` and `continueOnError`, collecting an
+   ordered array under the task name. Deliberately *bounded*: it does not introduce general
+   branching, a DAG/`needs`, or unbounded parallelism, and it does not reorder the surrounding
+   list. _Reflected:_ `map` in the `type` enum + `allOf` branch; new `mapWith` def; softened
+   "no parallel execution" wording in `taskList`/`tasks`.
+
+14. **`produces` — optional typed output contract.** TMX's headline is structured JSON
+   dataflow, but task outputs were untyped (like Step Functions / n8n). A task may now declare a
+   `produces` JSON Schema for its output. Purely declarative (no execution effect); it enables
+   static linting of `${{ tasks.NAME.field }}` references before a run, editor autocomplete, and
+   an optional runtime conformance check. This moves TMX toward typed-dataflow tools (Flyte,
+   Dagster) without requiring a programming language. _Reflected:_ `produces` on the common task
+   envelope (an embedded Draft 2020-12 schema object).
+
+15. **`eval` is its own task type, distinct from `assert`.** Considered folding model-graded
+   scoring into `assert` as extra matchers, but the two are different verbs with different
+   output contracts and failure semantics: **`assert` GATES** (boolean, aborts on failure on a
+   single known value); **`eval` MEASURES** (continuous `0..1` scores + aggregate metrics over a
+   dataset, emitting a scorecard, failing only against an explicit `threshold` policy). Conflating
+   them would distort assert's clean boolean identity and muddy its abort-on-fail semantics, and a
+   Vitest matcher (deterministic predicate) is a category apart from an LLM rubric (probabilistic
+   score). The recognised industry shape is `Eval(dataset, subject, scorers) → scorecard`
+   (promptfoo, Braintrust, OpenAI Evals). To avoid a parallel vocabulary, **matchers are the
+   shared primitive**: the matcher enum was extracted to a `matcherName` def reused by both
+   `assertion.matcher` and the `eval` `matcher` scorer. `eval` reuses `map`'s bounded fan-out for
+   its dataset (`concurrency`). _Reflected:_ `eval` in the `type` enum + `allOf` branch; new
+   `evalWith`, `scorer`, `evalThreshold` defs; `matcherName` extracted and referenced from both
+   `assertion` and `scorer`.
+
 ### Interpretation notes (flag if you'd prefer otherwise)
 
 - `kind` is **optional**, not required — so minimal files (`{ "tasks": [...] }`) still
@@ -208,7 +260,15 @@ These were open questions in the first draft; now answered and reflected in the 
   keep open?
   A: Keep open for now.
 - Versioning: should `version`/schema `$id` carry a spec version for forward-compat?
-  A: Yes, but no need to set until first pass spec is ready to go.
+  A: **Resolved — yes, in the `$id` path.** Both schemas now carry the spec version as a
+  path segment (`https://tmx.dev/schemas/0.2.0/tmx.schema.json`), so distinct versions are
+  distinct resources that can coexist (forward-compat), and the chosen `$id` is recorded in a
+  top-level `$comment`. The provider schema's cross-`$ref`s to the task definition are pinned to
+  the same versioned `$id`. Current version: **0.2.0 (draft)** — bumped from the implicit 0.1.0
+  by the `map`/`eval`/`produces` additions. A Flow document does not declare its target version;
+  the loader selects the schema. (Alternative considered: keep a stable `$id` and add a separate
+  `version` field — rejected for weaker forward-compat, but it would avoid the provider-ref churn
+  on each bump.)
 
 ## Validating locally
 

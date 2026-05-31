@@ -1,0 +1,94 @@
+{
+  "kind": "flow",
+  "name": "qa-eval",
+  "description": "Evaluate an LLM assistant over a dataset of cases with the `eval` task, then gate the Flow on the resulting score. `eval` MEASURES (continuous scores + a scorecard); the following `assert` GATES (boolean) on the eval's threshold result. Deterministic scorers reuse the same Vitest matcher vocabulary as `assert`.",
+  "inputs": {
+    "cases": {
+      "type": "array",
+      "description": "Eval cases, each { input, expected }.",
+      "default": [
+        {
+          "input": "What is your refund window?",
+          "expected": "30 days"
+        },
+        {
+          "input": "How do I reset my password?",
+          "expected": "reset link"
+        }
+      ]
+    }
+  },
+  "context": {
+    "secrets": {
+      "ANTHROPIC_API_KEY": {
+        "provider": "aws-sm",
+        "key": "ci/anthropic-key"
+      }
+    }
+  },
+  "tasks": [
+    {
+      "name": "grade-assistant",
+      "type": "eval",
+      "secrets": [
+        "ANTHROPIC_API_KEY"
+      ],
+      "with": {
+        "dataset": "${{ inputs.cases }}",
+        "concurrency": 4,
+        "subject": {
+          "type": "chat-completion",
+          "with": {
+            "model": "claude-opus-4-8",
+            "apiUrl": "https://api.anthropic.com/v1/chat/completions",
+            "apiKey": "${{ secrets.ANTHROPIC_API_KEY }}",
+            "messages": [
+              {
+                "role": "system",
+                "content": "You are a concise support assistant."
+              },
+              {
+                "role": "user",
+                "content": "${{ case.input }}"
+              }
+            ]
+          }
+        },
+        "scorers": [
+          {
+            "name": "mentions-expected",
+            "matcher": "toContain",
+            "expected": "${{ case.expected }}"
+          },
+          {
+            "name": "quality",
+            "type": "llmRubric",
+            "model": "claude-opus-4-8",
+            "apiUrl": "https://api.anthropic.com/v1/chat/completions",
+            "apiKey": "${{ secrets.ANTHROPIC_API_KEY }}",
+            "rubric": "Is the answer correct, concise, and polite?",
+            "weight": 2
+          }
+        ],
+        "threshold": {
+          "metric": "weightedMean",
+          "min": 0.8
+        }
+      }
+    },
+    {
+      "name": "gate",
+      "type": "assert",
+      "with": {
+        "assertions": [
+          {
+            "actual": "${{ tasks.grade-assistant.passed }}",
+            "matcher": "toBe",
+            "expected": true,
+            "message": "QA eval must meet the 0.8 weighted-mean threshold"
+          }
+        ]
+      }
+    }
+  ]
+}
