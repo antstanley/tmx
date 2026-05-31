@@ -308,7 +308,7 @@
     },
 
     "assertWith": {
-      "title": "Assert / Expect task",
+      "title": "Assert task",
       "description": "Assert values from the Pipeline state. The task fails if any assertion does not hold.",
       "type": "object",
       "additionalProperties": false,
