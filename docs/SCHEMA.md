@@ -8,8 +8,10 @@ defensible choice and flagged it under [Open questions](#open-questions).
 - Schema: [`tmx.schema.json`](./tmx.schema.json) (JSON Schema Draft 2020-12)
 - Provider manifest schema: [`tmx-provider.schema.json`](./tmx-provider.schema.json)
 - Examples: [`examples/`](./examples) — one combined Flow in **JSON / YAML / TOML / JSONC**
-  (kept byte-for-byte equivalent), a mixed-format [`folder-layout/`](./examples/folder-layout),
-  and a [`provider-manifest.yaml`](./examples/provider-manifest.yaml). All validated.
+  (kept semantically identical), a mixed-format [`folder-layout/`](./examples/folder-layout),
+  a [`provider-manifest.yaml`](./examples/provider-manifest.yaml), and name-keyed-map /
+  `exec`-shorthand task examples ([`map-tasks.yaml`](./examples/map-tasks.yaml),
+  [`shorthand-tasks.json`](./examples/shorthand-tasks.json)). All validated.
 - Targets the **parsed JSON model**; the same schema applies whether the source was
   YAML, JSON, JSONC or TOML.
 
@@ -19,7 +21,7 @@ defensible choice and flagged it under [Open questions](#open-questions).
 Flow (static)                              Pipeline (runtime — out of scope here)
 ├── environment?   inline | "ref"          the live state of a Flow as it executes
 ├── context?       inline | "ref"
-└── tasks[]        required, runs in order
+└── tasks          required — ordered array or name-keyed map
 ```
 
 A **Flow** is the only top-level document. `tasks` is the only required field;
@@ -72,7 +74,8 @@ array. A task that names no secrets gets none in clear text.
 ## Context
 
 `env`, `secrets`, and lifecycle `hooks` (`create`, `change`, `destroy`, `error`).
-A hook body is an inline task list **or** a reference to a Flow that implements it.
+A hook body is an inline set of tasks (an ordered array **or** a name-keyed map), a
+reference to a Flow, or a `{ use, inputs }` Flow import.
 Secrets are auto-masked; tasks must declare which ones they need (see Tasks). On
 inheritance, `env`/`secrets`/`hooks` merge **independently** at the key level;
 `contextPrecedence` decides who wins a collision (`local` by default).
@@ -93,9 +96,10 @@ The provider contract is its own artifact: [`tmx-provider.schema.json`](./tmx-pr
 A manifest declares `name`, `type` (`binary` | `flow`), an optional `binary` path, an
 optional `optionsSchema` (so the CLI can validate `environment.options` against the
 chosen provider), and the four required `methods`: `bootstrap`, `deploy`, `clean`,
-`destroy`. Each method is a subcommand string (binary providers), a Flow reference, or
-an inline list of TMX tasks (which `$ref` the task definition in `tmx.schema.json`). An
-environment's `provider` field names the manifest to use. See
+`destroy`. Each method is a subcommand string (binary providers), a Flow reference, a
+`{ use, inputs }` Flow import, or an inline set of TMX tasks — an ordered array or a
+name-keyed map, with the same `exec` string shorthand, all `$ref`-ing the task definition
+in `tmx.schema.json`. An environment's `provider` field names the manifest to use. See
 [`examples/provider-manifest.yaml`](./examples/provider-manifest.yaml).
 
 ## Design decisions (interpretations of the README)
@@ -105,7 +109,7 @@ environment's `provider` field names the manifest to use. See
    avoids collisions with common fields. _Alternative:_ inline config.
 2. **`type: "flow"` for user-defined tasks.** The README says user tasks "are
    implemented as Flows that can be imported." Modelled as a first-class task type with
-   `use` (reference) + `input`.
+   `use` (reference) + `inputs`.
 3. **References are plain strings.** `environment`, `context`, hook bodies and flow
    imports accept a string path/name. No registry/URI scheme is assumed yet.
 4. **Strict where shapes are known, open where they aren't.** Most objects are
@@ -126,7 +130,8 @@ These were open questions in the first draft; now answered and reflected in the 
 1. **Standalone files are self-identifying.** Every artifact accepts an optional `kind`
    (`flow` | `environment` | `context` | `task`, and `provider` for manifests) so one
    validator can dispatch by `kind` instead of relying on filename. _Reflected:_ a
-   `kind` const on each `$defs` artifact; `kind` set on all examples.
+   `kind` const on each `$defs` artifact; `kind` set on the examples (it is optional, so
+   `minimal-flow.json` omits it to demonstrate that).
 2. **Context merges independently, local-wins by default.** `env`/`secrets`/`hooks`
    merge as independent sections at the key level. On a collision the in-file/`local`
    value wins by default; set `contextPrecedence: inherited` to let the parent/folder
@@ -171,6 +176,17 @@ These were open questions in the first draft; now answered and reflected in the 
    the provider manifest's inline-task-map `method` branch mirrors it. See
    [`examples/shorthand-tasks.json`](./examples/shorthand-tasks.json) and the mixed map in
    [`examples/map-tasks.yaml`](./examples/map-tasks.yaml).
+11. **`assert` uses Vitest `expect` matchers.** Each assertion is
+   `{ actual, matcher, expected?, not?, message? }`, where `matcher` is a
+   [Vitest matcher](https://vitest.dev/api/expect.html) (`toBe`, `toEqual`, `toContain`,
+   `toHaveProperty`, …) and `not: true` mirrors the `.not` modifier. Mock- and
+   promise-only matchers (`toHaveBeenCalled`, `resolves`, `rejects`, …) are excluded as
+   they don't apply to asserting plain values. _Reflected:_ `assertion.matcher` enum +
+   `not`, replacing the earlier ad-hoc operator set.
+12. **`chat-completion` endpoint is `apiUrl` only.** The endpoint is given as a single full
+   URL (`apiUrl`, e.g. `https://api.openai.com/v1/chat/completions`); there is no separate
+   `baseUrl`. _Reflected:_ `chatCompletionWith.apiUrl` (the object stays open via
+   `additionalProperties: true` for provider-specific params).
 
 ### Interpretation notes (flag if you'd prefer otherwise)
 
@@ -196,7 +212,11 @@ These were open questions in the first draft; now answered and reflected in the 
 
 ## Validating locally
 
+The canonical validator is [`scripts/validate.sh`](../../scripts/validate.sh) — it checks
+both schemas, every example (dispatched by `kind`), and cross-format parity. To validate a
+single file against the schema with `check-jsonschema` instead:
+
 ```bash
-python3 -m venv .venv && . .venv/bin/activate && pip install jsonschema check-jsonschema
+python3 -m venv .venv-tmx && . .venv-tmx/bin/activate && pip install jsonschema check-jsonschema
 check-jsonschema --schemafile docs/tmx.schema.json docs/examples/single-file-flow.json
 ```

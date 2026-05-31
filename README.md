@@ -103,7 +103,8 @@ A Flow's `tasks` may be given in **either** of two forms:
 Both forms are equivalent in what they can express. The difference is ordering: the array
 form is explicitly ordered, while the map form runs in the **source document's key order**
 (the order keys appear in the YAML/JSON/JSONC/TOML file). The same array-or-map choice
-applies anywhere a set of tasks is accepted — lifecycle hooks and environment `bootstrap`.
+applies anywhere a set of tasks is accepted — lifecycle hooks, environment `bootstrap`,
+and provider manifest methods.
 
 ```yaml
 # array form — explicitly ordered
@@ -301,8 +302,10 @@ against the chosen provider), and the four required lifecycle **methods**:
 | `clean` | Remove deployed instances used for Flow runs. |
 | `destroy` | Destroy the entire environment, including everything created by `bootstrap`. |
 
-Each method is a subcommand string (binary providers), a Flow reference, or an inline list
-of TMX tasks. An environment's `provider` field names the manifest to use. See
+Each method is a subcommand string (binary providers), a Flow reference (or a
+`{ use, inputs }` import), or an inline set of TMX tasks — an ordered array or a name-keyed
+map, with the same `exec` string shorthand. An environment's `provider` field names the
+manifest to use. See
 [`docs/examples/provider-manifest.yaml`](./docs/examples/provider-manifest.yaml).
 
 ## Interpolation
