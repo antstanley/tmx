@@ -4,11 +4,16 @@ description: "Flow whose `tasks` are given as a name-keyed map instead of an ord
 
 # ---- Tasks: a name-keyed MAP (not an array) ----
 # The property name is the task's name, so the task object itself does not repeat `name`.
+# A value may also be a plain string: shorthand for an `exec` task running that command
+# (see `lint` below). Full task objects and string shorthands can be mixed in one map.
 tasks:
   build:
     type: exec
     with:
       command: npm run build
+
+  # string shorthand: equivalent to { type: exec, with: { command: npm run lint } }
+  lint: npm run lint
 
   test:
     type: exec

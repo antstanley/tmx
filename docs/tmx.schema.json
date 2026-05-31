@@ -76,15 +76,23 @@
 
     "tasks": {
       "title": "Task collection",
-      "description": "A set of tasks, expressed as EITHER an ordered array OR a name-keyed map. Array form (`taskList`): tasks run in the order they appear. Map form: a JSON object whose property names are the task names and whose values are task objects (the task object need not repeat `name`); tasks run in the source document's key order (the order keys appear in the YAML/JSON/JSONC/TOML file). Both forms run in sequence — there is no branching, looping or parallel execution.",
+      "description": "A set of tasks, expressed as EITHER an ordered array OR a name-keyed map. Array form (`taskList`): tasks run in the order they appear; each item is a full task object (no string shorthand). Map form: a JSON object whose property names are the task names and whose values are either a full task object (which need not repeat `name`) or a string shorthand for an `exec` task; tasks run in the source document's key order (the order keys appear in the YAML/JSON/JSONC/TOML file). Both forms run in sequence — there is no branching, looping or parallel execution.",
       "oneOf": [
         { "$ref": "#/$defs/taskList" },
         {
           "title": "Task map",
-          "description": "A name-keyed map of tasks: each property name is the task's name and its value is a task object. Runs in the source document's key order.",
+          "description": "A name-keyed map of tasks: each property name is the task's name and its value is either a task object or a string shorthand for an `exec` task (the string is run as a shell command). Runs in the source document's key order.",
           "type": "object",
           "minProperties": 1,
-          "additionalProperties": { "$ref": "#/$defs/task" }
+          "additionalProperties": {
+            "oneOf": [
+              { "$ref": "#/$defs/task" },
+              {
+                "type": "string",
+                "description": "Shorthand for an exec task: the string is run as a shell command (equivalent to { type: 'exec', with: { command: <string> } }). The map key is the task name."
+              }
+            ]
+          }
         }
       ]
     },

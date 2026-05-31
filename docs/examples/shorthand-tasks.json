@@ -1,0 +1,9 @@
+{
+  "kind": "flow",
+  "name": "shorthand-tasks",
+  "description": "Flow using the exec string shorthand in the map form: each task value is a shell-command string, which expands to an exec task whose `with.command` is that string and whose name is the map key.",
+  "tasks": {
+    "build": "npm run build",
+    "test": "npm test"
+  }
+}

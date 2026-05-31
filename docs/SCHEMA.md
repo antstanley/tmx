@@ -162,6 +162,15 @@ These were open questions in the first draft; now answered and reflected in the 
    provider manifest's inline-task `method`. _Reflected:_ `taskList` kept as the array form;
    new `tasks` def is `oneOf: [taskList, <name-keyed map>]` used by `flow.tasks` and `hook`;
    provider `method` mirrors the map branch. See [`examples/map-tasks.yaml`](./examples/map-tasks.yaml).
+10. **`exec` string shorthand (map form only).** In the **map form** of a task collection, a
+   task value may be a plain **string** instead of a task object; it is shorthand for an
+   `exec` task that runs the string as a shell command, with the map key as the task name
+   (`{ "build": "npm run build" }` ≡ `{ "build": { "type": "exec", "with": { "command": "npm run build" } } }`).
+   The shorthand is **map-only** — array (`taskList`) items must always be full task objects.
+   _Reflected:_ the map branch's `additionalProperties` in `tasks` is now `oneOf: [ {$ref: task}, {type: string} ]`;
+   the provider manifest's inline-task-map `method` branch mirrors it. See
+   [`examples/shorthand-tasks.json`](./examples/shorthand-tasks.json) and the mixed map in
+   [`examples/map-tasks.yaml`](./examples/map-tasks.yaml).
 
 ### Interpretation notes (flag if you'd prefer otherwise)
 

@@ -121,6 +121,22 @@ tasks:
       command: npm run build
 ```
 
+**`exec` string shorthand (map form only).** In the **map form**, a task value may be a
+plain **string** instead of a task object. The string is shorthand for an `exec` task that
+runs it as a shell command, with the map key as the task name. So:
+
+```json
+{ "tasks": { "build": "npm run build" } }
+```
+
+is equivalent to the full `exec` task object:
+
+```json
+{ "tasks": { "build": { "type": "exec", "with": { "command": "npm run build" } } } }
+```
+
+The shorthand is **map-only** — array items must always be full task objects.
+
 **Common task fields** (the envelope shared by every task):
 
 | Field | Description |

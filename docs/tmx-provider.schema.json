@@ -54,9 +54,17 @@
         {
           "type": "object",
           "title": "Inline task map",
-          "description": "Inline name-keyed map of TMX tasks: each property name is the task's name and its value is a task object conforming to the task schema in tmx.schema.json. Runs in the source document's key order.",
+          "description": "Inline name-keyed map of TMX tasks: each property name is the task's name and its value is either a task object conforming to the task schema in tmx.schema.json or a string shorthand for an `exec` task (the string is run as a shell command). Runs in the source document's key order.",
           "minProperties": 1,
-          "additionalProperties": { "$ref": "https://tmx.dev/schemas/tmx.schema.json#/$defs/task" }
+          "additionalProperties": {
+            "oneOf": [
+              { "$ref": "https://tmx.dev/schemas/tmx.schema.json#/$defs/task" },
+              {
+                "type": "string",
+                "description": "Shorthand for an exec task: the string is run as a shell command (equivalent to { type: 'exec', with: { command: <string> } }). The map key is the task name."
+              }
+            ]
+          }
         },
         {
           "type": "object",
