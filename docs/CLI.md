@@ -157,6 +157,7 @@ run.
 | `--concurrency N`              |       | Global cap for `map` / `eval` fan-out                                                                     |
 | `--matrix key=v1,v2,…`         |       | Desugar to a bounded `map` over the values; repeatable axes form a cross-product (`${{ matrix.key }}`)     |
 | `--continue-on-error`          |       | Force the envelope flag across all tasks                                                                  |
+| `--check-produces=strict`      |       | Runtime-check each task output against its `produces` schema and fail on mismatch (off by default)        |
 | `--timeout <dur>`              |       | Global wall-clock budget (`30s`, `5m`)                                                                    |
 | `--max-state-size <size>`      |       | Adjust the in-memory Pipeline-state cap (default `512MiB`); exceeding it aborts the run                   |
 | `--no-store`                   |       | Do not record this run (see [Pipeline runs](#pipeline-runs))                                              |
