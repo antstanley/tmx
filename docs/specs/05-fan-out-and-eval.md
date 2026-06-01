@@ -128,7 +128,7 @@ I/O.
   arguments for multi-arg matchers like `toHaveProperty(path, value)`), and a `not` flag.
 - Output: a boolean (pass/fail). `assert` aggregates booleans into a gate; the `matcher` scorer maps
   the boolean to `1.0`/`0.0`.
-- The enum is **closed** (24 value matchers; mock/promise matchers excluded per the schema). An
+- The enum is **closed** (25 value matchers; mock/promise matchers excluded per the schema). An
   unknown matcher cannot occur — the schema rejects it at validation — but the engine asserts
   exhaustiveness so the closed set and the code cannot drift.
 
@@ -192,3 +192,10 @@ map task                                   eval task
   Confirm this is the intended split or whether a metric should imply a `passScore`.
 - *Cost/latency capture for `llmRubric`/`chat-completion`.* Eval harnesses track token cost; should
   the scorecard `summary` optionally carry it, or is that out of scope for v0? (Out of scope today.)
+- *`p90` in the summary — source inconsistency.* This spec's
+  [`Scorecard`](canonical-types.schema.json) `summary` includes `p90`, because the `evalThreshold`
+  `metric` enum in [`tmx.schema.json`](../tmx.schema.json) (and [`comparison.md`](../comparison.md))
+  allow gating on `p90` — a metric the engine cannot honour without computing it. But the schema's
+  own `evalWith` output *description* and the [README](../../README.md) scorecard example list
+  `summary` as `{ mean, weightedMean, passRate, p50, count }` (no `p90`). The implementation computes
+  and emits `p90`; the data-model schema's description should be reconciled to match.

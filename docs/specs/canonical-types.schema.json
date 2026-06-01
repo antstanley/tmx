@@ -140,7 +140,7 @@
 
     "EvalSummary": {
       "title": "Eval summary",
-      "description": "Aggregate metrics over all cases in a scorecard.",
+      "description": "Aggregate metrics over all cases in a scorecard. Includes `p90` so an `evalThreshold` with `metric: p90` can be honoured; note the data-model schema's evalWith output description and the README scorecard example currently list summary without `p90` (see 05-fan-out-and-eval.md open questions).",
       "type": "object",
       "additionalProperties": false,
       "required": ["mean", "weightedMean", "passRate", "count"],
