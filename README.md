@@ -19,7 +19,10 @@ and environment. A Pipeline is the state of a Flow at runtime.
 > as JSON Schema plus worked examples — no runtime yet. The concrete shapes and decisions
 > below are captured in [`docs/tmx.schema.json`](./docs/tmx.schema.json) and
 > [`docs/tmx-provider.schema.json`](./docs/tmx-provider.schema.json); the rationale and
-> still-open questions live in [`docs/SCHEMA.md`](./docs/SCHEMA.md).
+> still-open questions live in [`docs/SCHEMA.md`](./docs/SCHEMA.md). The formal **Rust + Tiger
+> Style implementation specification** for the runtime and CLI is at
+> [`docs/specs/`](./docs/specs) (start with [`docs/specs/00-overview.md`](./docs/specs/00-overview.md));
+> [`docs/README.md`](./docs/README.md) indexes the whole documentation tree.
 
 ## Concepts
 
@@ -479,12 +482,14 @@ This repo uses **Jujutsu (jj)**, which does not run Git hooks. So:
 ```
 CHANGELOG.md                 # spec version history (Keep a Changelog)
 docs/
+  README.md                  # documentation-tree index (data model + implementation specs)
   tmx.schema.json            # core schema (Flow/Task/Context/Environment)
   tmx-provider.schema.json   # provider manifest schema
   SCHEMA.md                  # design decisions + open questions
   CLI.md                     # proposed `tmx` command-line interface (design draft)
   RUNTIME.md                 # proposed execution engine — hexagonal ports & adapters (design draft)
   comparison.md              # task/workflow-runner landscape + TMX positioning
+  specs/                     # formal Rust + Tiger Style implementation specification (00–08 + globals)
   examples/                  # validated examples in all four formats
 scripts/
   validate.sh                # validate schemas + examples

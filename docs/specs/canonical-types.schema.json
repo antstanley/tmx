@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tmx.dev/schemas/0.2.0/canonical-types.schema.json",
+  "$comment": "Runtime/output canonical types for the TMX implementation. The data-model schema (tmx.schema.json) covers the STATIC Flow definition and declares the runtime Pipeline 'out of scope' (SCHEMA.md decision 6). This sidecar fills that gap: it is the authoritative shape of what the engine PRODUCES — pipeline state wrapping, task results, the eval scorecard, diagnostics, the event stream, the run record, and the typed error categories. It is the contract the Rust types in tmx-core serialise to; every $def here is described in prose under docs/specs/ (chiefly 01-domain-model.md and 08-errors-and-observability.md).",
+  "title": "TMX runtime canonical types",
+  "description": "Authoritative shapes for the values the TMX engine emits at runtime.",
+  "type": "object",
+
+  "$defs": {
+
+    "RunId": {
+      "title": "Run identifier",
+      "description": "A UUIDv7 identifying a single Pipeline run. Time-ordered, so a lexical sort is chronological (RunStore listings need no separate timestamp key).",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+
+    "Milliseconds": {
+      "title": "Milliseconds",
+      "description": "A non-negative whole number of milliseconds. The normalised wall-clock unit for all durations the engine reports.",
+      "type": "integer",
+      "minimum": 0
+    },
+
+    "Timestamp": {
+      "title": "Timestamp",
+      "description": "An RFC 3339 / ISO 8601 instant in UTC, produced via the Clock port.",
+      "type": "string",
+      "format": "date-time"
+    },
+
+    "RunStatus": {
+      "title": "Run status",
+      "description": "Terminal or in-flight status of a Pipeline. `ok` and `failed` are terminal success/failure; `cancelled`/`timed_out` are terminal via the cancellation contract.",
+      "type": "string",
+      "enum": ["pending", "running", "ok", "failed", "cancelled", "timed_out"]
+    },
+
+    "TaskStatus": {
+      "title": "Task status",
+      "description": "Outcome of a single task. `ok` = ran and succeeded; `skipped` = `if` evaluated falsy; `error` = the task failed (aborting the Pipeline, or recorded in place under continueOnError).",
+      "type": "string",
+      "enum": ["ok", "skipped", "error"]
+    },
+
+    "PipelineState": {
+      "title": "Pipeline state",
+      "description": "The single JSON object threaded through a run. Each task's output is merged in under its name (or `output` key): `state[name] = output`. Always a JSON object at the top level. Held in memory; its serialised size is bounded by the state cap (see 04-execution-engine.md).",
+      "type": "object"
+    },
+
+    "MessageWrapper": {
+      "title": "Wrapped text output",
+      "description": "How non-JSON UTF-8 text output is normalised into the Pipeline state (README contract).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message"],
+      "properties": { "message": { "type": "string" } }
+    },
+
+    "BlobWrapper": {
+      "title": "Wrapped binary output",
+      "description": "How non-UTF-8 binary output is normalised into the Pipeline state. The bytes are base64-encoded and count toward the state size cap.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blob"],
+      "properties": { "blob": { "type": "string", "contentEncoding": "base64" } }
+    },
+
+    "ErrorCategory": {
+      "title": "Core error category",
+      "description": "The typed error categories the core returns. The core knows nothing about exit codes; the CLI adapter maps these to process exit codes (run_failure→1, validation→3, resolution→4, environment→5, timeout→124, interrupt→130). Usage errors (exit 2) are raised by the CLI adapter itself and are not a core category.",
+      "type": "string",
+      "enum": ["run_failure", "validation", "resolution", "environment", "timeout", "interrupt"]
+    },
+
+    "RunError": {
+      "title": "Run error",
+      "description": "A typed failure returned by the core, carrying its category, a stable code, a human message, and optional context (the task or reference that failed).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "code", "message"],
+      "properties": {
+        "category": { "$ref": "#/$defs/ErrorCategory" },
+        "code": { "type": "string", "description": "Stable machine code, e.g. 'state_cap_exceeded', 'unknown_namespace', 'flow_depth_exceeded'." },
+        "message": { "type": "string" },
+        "task": { "type": "string", "description": "Name of the task that produced the error, when applicable." },
+        "path": { "type": "string", "description": "JSON pointer or reference path the error relates to, when applicable." }
+      }
+    },
+
+    "Diagnostic": {
+      "title": "Diagnostic",
+      "description": "A finding from `validate` or `lint`. Validation diagnostics come from the SchemaValidator; lint diagnostics come from static reference/`produces`/secret analysis.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "code", "message"],
+      "properties": {
+        "severity": { "type": "string", "enum": ["error", "warning", "info"] },
+        "code": { "type": "string", "description": "Stable diagnostic code, e.g. 'unknown_task_field', 'undeclared_secret', 'produces_mismatch'." },
+        "message": { "type": "string" },
+        "path": { "type": "string", "description": "Location of the finding: a file path with a JSON pointer, or an interpolation expression." }
+      }
+    },
+
+    "TaskResult": {
+      "title": "Task result",
+      "description": "The per-task record produced by the runner. `output` is present when status is `ok` (or `error` under continueOnError); `error` is present when status is `error`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status", "startedAt", "ms"],
+      "properties": {
+        "name": { "type": "string", "description": "The task name (its state key unless overridden by `output`)." },
+        "status": { "$ref": "#/$defs/TaskStatus" },
+        "output": { "description": "The JSON the task merged into the state. Any JSON type after normalisation (object, or a message/blob wrapper)." },
+        "error": { "$ref": "#/$defs/RunError" },
+        "startedAt": { "$ref": "#/$defs/Timestamp" },
+        "ms": { "$ref": "#/$defs/Milliseconds" }
+      }
+    },
+
+    "EvalCase": {
+      "title": "Eval case result",
+      "description": "One dataset case's scored result inside a scorecard.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scores", "score", "passed"],
+      "properties": {
+        "case": { "description": "The dataset case object that was evaluated (bound as ${{ case }})." },
+        "output": { "description": "The subject's output for this case (bound as ${{ output }})." },
+        "scores": {
+          "type": "object",
+          "description": "Per-scorer score in [0,1], keyed by scorer name.",
+          "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "score": { "type": "number", "minimum": 0, "maximum": 1, "description": "The case score: the weighted mean of its scorers' scores." },
+        "passed": { "type": "boolean", "description": "Whether the case score is at or above the eval threshold's passScore." }
+      }
+    },
+
+    "EvalSummary": {
+      "title": "Eval summary",
+      "description": "Aggregate metrics over all cases in a scorecard.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mean", "weightedMean", "passRate", "count"],
+      "properties": {
+        "mean": { "type": "number", "minimum": 0, "maximum": 1 },
+        "weightedMean": { "type": "number", "minimum": 0, "maximum": 1 },
+        "passRate": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of cases whose score is at or above passScore." },
+        "p50": { "type": "number", "minimum": 0, "maximum": 1 },
+        "p90": { "type": "number", "minimum": 0, "maximum": 1 },
+        "count": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "Scorecard": {
+      "title": "Scorecard",
+      "description": "The value an `eval` task merges into the Pipeline state under its name.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cases", "summary", "passed"],
+      "properties": {
+        "cases": { "type": "array", "items": { "$ref": "#/$defs/EvalCase" } },
+        "summary": { "$ref": "#/$defs/EvalSummary" },
+        "passed": { "type": "boolean", "description": "Overall pass/fail. True when no threshold is set, or when the threshold metric meets its `min`." }
+      }
+    },
+
+    "Event": {
+      "title": "Run event",
+      "description": "One entry in the canonical event stream. The `event` field discriminates the variant; the ndjson reporter emits one Event per line. Every payload value is passed through the Masker before emission.",
+      "type": "object",
+      "required": ["event"],
+      "properties": {
+        "event": {
+          "type": "string",
+          "enum": [
+            "run.start", "run.finish",
+            "task.start", "task.finish", "task.skip", "task.error",
+            "map.item.finish", "eval.case.finish",
+            "hook.start", "hook.finish"
+          ]
+        },
+        "id": { "$ref": "#/$defs/RunId", "description": "The run id; present on run-level events." },
+        "flow": { "type": "string", "description": "Flow name; present on run.start." },
+        "name": { "type": "string", "description": "Task or hook name; present on task.*/hook.* events." },
+        "status": { "type": "string", "description": "Outcome; present on *.finish events." },
+        "ms": { "$ref": "#/$defs/Milliseconds" },
+        "reason": { "type": "string", "description": "Why a task was skipped; present on task.skip (e.g. 'if=false')." },
+        "output": { "description": "Masked task output; present on task.finish." }
+      }
+    },
+
+    "RunRecord": {
+      "title": "Run record",
+      "description": "What the RunStore persists per run at ./.tmx/runs/<id>/. A record, not a journal: a final-state snapshot plus the ndjson event log. No replay/durability semantics.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "status", "startedAt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/RunId" },
+        "flow": { "type": "string", "description": "The flow name or source path." },
+        "status": { "$ref": "#/$defs/RunStatus" },
+        "startedAt": { "$ref": "#/$defs/Timestamp" },
+        "finishedAt": { "$ref": "#/$defs/Timestamp" },
+        "ms": { "$ref": "#/$defs/Milliseconds" },
+        "finalState": { "$ref": "#/$defs/PipelineState", "description": "The merged Pipeline state at run end, secrets masked." },
+        "results": { "type": "array", "items": { "$ref": "#/$defs/TaskResult" }, "description": "Per-task results, in execution order." }
+      }
+    }
+
+  }
+}
