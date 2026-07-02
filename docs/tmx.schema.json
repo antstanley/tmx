@@ -420,7 +420,7 @@
 
     "evalWith": {
       "title": "Eval task",
-      "description": "Evaluate the output of a subject against one or more scorers, optionally over a dataset of cases, and emit a scorecard. Distinct from `assert`: `assert` is a deterministic boolean GATE on a known value that aborts on failure; `eval` MEASURES quality — it produces continuous scores in [0,1] and aggregate metrics, and only fails the task when a `threshold` policy is set and not met. Deterministic scorers reuse the same matcher vocabulary as `assert`. Output: `state[name] = { cases: [ { case, output, scores: { <scorer>: <0..1> }, score, passed } ], summary: { mean, weightedMean, passRate, p50, count }, passed }`.",
+      "description": "Evaluate the output of a subject against one or more scorers, optionally over a dataset of cases, and emit a scorecard. Distinct from `assert`: `assert` is a deterministic boolean GATE on a known value that aborts on failure; `eval` MEASURES quality — it produces continuous scores in [0,1] and aggregate metrics, and only fails the task when a `threshold` policy is set and not met. Deterministic scorers reuse the same matcher vocabulary as `assert`. Output: `state[name] = { cases: [ { case, output, scores: { <scorer>: <0..1> }, score, passed } ], summary: { mean, weightedMean, passRate, min, p50, p90, count }, passed }`.",
       "type": "object",
       "additionalProperties": false,
       "required": ["scorers"],

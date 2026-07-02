@@ -322,6 +322,10 @@ A change is done when:
   corrupt-state or leaked-secret bug aborts in production rather than miscomputing.
 - *Limit constants are units-last.* **`STATE_SIZE_MAX_BYTES`, not `MAX_STATE_SIZE`.** Chosen for Tiger
   Style naming fidelity (units last, descending significance).
+- *No numeric coverage gate.* **CI has no coverage-percentage floor; the golden-Flow conformance
+  suite plus the negative-space test rules are the correctness net.** Chosen because a percentage
+  gate invites gaming and measures lines, not properties; revisit only if regressions slip
+  through.
 
 **Open questions**
 
@@ -332,5 +336,3 @@ A change is done when:
   lands. Until then they are the plan, recorded here.
 - *MSRV policy.* The minimum supported Rust version and how aggressively it tracks stable is undecided;
   pin it when the first crate is created.
-- *Coverage floor.* Whether to add a coverage gate (and at what threshold) to CI is open; the golden
-  Flow conformance suite is the primary correctness net regardless.

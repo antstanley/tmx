@@ -130,9 +130,9 @@ The **provider lifecycle** (`bootstrap`/`deploy`/`clean`/`destroy`, driven by `t
   cap; there is no unbounded or distributed parallelism. The test adapter runs serially.
 - **Cancellation** propagates a cancel signal from the root: `--timeout` (via `Clock`) and SIGINT both
   trigger it. On cancel, the Scheduler stops dispatching new work, in-flight adapters get a grace
-  period then a hard stop, the `destroy` hook fires, and the run exits `124` (timeout) or `130`
-  (interrupt). In Rust this is a cancellation token threaded into every adapter call and awaited
-  alongside the work.
+  period (`CANCEL_GRACE_MS`, default 5 000 ms; `--grace <dur>` overrides) then a hard stop, the
+  `destroy` hook fires, and the run exits `124` (timeout) or `130` (interrupt). In Rust this is a
+  cancellation token threaded into every adapter call and awaited alongside the work.
 - **Per-task `timeout`** (`exec`/`run`/`fetch`/`store`) is enforced by the adapter under the same
   cancellation contract.
 
@@ -170,11 +170,12 @@ extension goes through `flow` import, not new task types (no plugin-executor por
 - *Secret provider backends stay open.* **A trait seam with `env`/`file` built in; `aws-sm`/`vault`
   are additional adapters.** Chosen per [`SCHEMA.md`](../SCHEMA.md#still-open): enumerate later, keep
   the seam now.
+- *Cancellation grace period defaults to 5 s.* **In-flight adapters get `CANCEL_GRACE_MS` (default
+  5 000 ms) between the cancel signal and the hard stop, overridable via `--grace <dur>`.** Chosen
+  as long enough for a clean HTTP/process shutdown without holding a cancelled run hostage.
 
 **Open questions**
 
 - *Plugin-executor port.* A registered custom `type` is deferred, not designed out
   ([`RUNTIME.md` decision 8](../RUNTIME.md#design-decisions)). If added, it becomes a new driven port
   with a strict trust boundary — what is that boundary?
-- *Cancellation grace period.* The hard-stop grace duration after a cancel signal is unspecified;
-  pick a default and make it configurable.

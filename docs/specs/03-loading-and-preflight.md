@@ -76,8 +76,9 @@ mapping), not a remote namespace.
    (same-folder only — there is no inheritance from a parent folder).
 2. Every other artifact is a **task**: `kind: task`, or (when `kind` is omitted) any file that is not
    a reserved `environment.*` / `context.*` / `flow.*`.
-3. Tasks order by **natural filename order** (so `task-2` precedes `task-10`, `build` before
-   `deploy`).
+3. Tasks order by **natural filename order**: byte-wise ASCII comparison, except that maximal runs
+   of ASCII digits compare as unsigned integers — so `task-2` precedes `task-10`, `build` precedes
+   `deploy`. Case-sensitive, locale-independent, identical on every host.
 4. Each task file is desugared and validated **before the run starts**.
 
 A standalone task file (any name) is likewise validated, then wrapped into a one-task Flow.
@@ -203,6 +204,10 @@ to the model in `tmx-schema`. The use cases `ValidateArtifacts`, `LintFlow`, and
   gap at the first failing task.
 - *References are file paths in v0.* **No registry beyond the local provider map.** Chosen per
   [`CLI.md` decision 11](../CLI.md#design-decisions); a resolver spec is deferred.
+- *Natural filename order is byte-wise + numeric-aware.* **Filenames compare byte-wise (ASCII,
+  case-sensitive, locale-independent), with maximal runs of ASCII digits compared as unsigned
+  integers.** Chosen so directory runs are reproducible across hosts — locale-aware collation
+  would make task order host-dependent.
 
 **Open questions**
 
@@ -210,5 +215,3 @@ to the model in `tmx-schema`. The use cases `ValidateArtifacts`, `LintFlow`, and
   newer spec warns but runs unless it uses an unknown construct. Is "unknown construct" detected at
   validation (a relaxed schema mode) or at dispatch (an unknown `type`)? Settle when a second spec
   version exists.
-- *Natural filename ordering with mixed separators.* "Natural order" needs a precise definition
-  (numeric-aware, case handling, locale) so directory runs are reproducible across hosts.

@@ -62,6 +62,7 @@ progress to stderr.
 | `task.error` | a task failed (aborting, or recorded under `continueOnError`) |
 | `map.item.finish` / `eval.case.finish` | per fan-out element / dataset case |
 | `hook.start` / `hook.finish` | lifecycle hook execution |
+| `log.truncated` | the per-run event log reached `EVENT_LOG_MAX_BYTES`; persistence stops (streaming continues) |
 
 The `Event` shape is in [`canonical-types.schema.json`](canonical-types.schema.json). Reporters are
 `EventSink` adapters:
@@ -87,6 +88,11 @@ Masking is a domain policy enforced at the output boundary, not by individual ad
 - Tiger Style negative space: the runner asserts the Masker registry is populated before any output
   port can run, and each output port asserts it routed through the Masker. A new output port that
   forgets the Masker fails the assertion in tests — masking cannot be bypassed by adding a sink.
+- Redaction is **value-based** in v0: every registered value is scanned for as a substring across
+  emitted payloads. Values shorter than `MASK_SCAN_LEN_MIN_BYTES` (default 6, in
+  `tmx-schema::limits`) are exempt from the substring scan — a 4-character secret would clobber
+  unrelated text — but still redact on an exact-value match. Provenance-based tracking (which
+  field a secret flowed into) is deferred.
 
 So even a task that requested a secret and echoes it cannot surface it in any emitted artifact.
 
@@ -98,6 +104,11 @@ So even a task that requested a secret and echoes it cannot surface it in any em
 log — as a [`RunRecord`](canonical-types.schema.json). IDs are **UUIDv7** (time-ordered →
 chronological listings without a sort key, from the `IdGenerator` port). It is a **record, not a
 journal**: no replay or durability semantics.
+
+The persisted event log is bounded by `EVENT_LOG_MAX_BYTES` (default 256 MiB): on overflow the
+store writes a final `log.truncated` event and stops persisting further events for that run, while
+stdout streaming and the final-state snapshot continue unaffected — the record is capped, never
+sampled.
 
 - **Retention.** Records purge after a default **30 days**, applied opportunistically at the start of
   each `tmx run` and on demand via `tmx runs prune`; configurable via `runs.retention` /
@@ -116,7 +127,8 @@ A cancellation token is threaded from the root into every adapter call (see
 SIGINT:
 
 1. The `Scheduler` stops dispatching new work.
-2. In-flight adapters get a grace period, then a hard stop.
+2. In-flight adapters get a grace period (`CANCEL_GRACE_MS`, default 5 000 ms; `--grace`
+   overrides), then a hard stop.
 3. The `destroy` hook fires (the `finally` of the lifecycle).
 4. The run ends `cancelled`/`timed_out`; the CLI maps to exit `124`/`130`.
 
@@ -154,11 +166,16 @@ Error types in `tmx-core/src/error.rs`; the event enum in `model.rs`; reporters 
 - *Run store is a record, not a journal.* **Final-state snapshot + ndjson log, UUIDv7-keyed, 30-day
   retention.** Per [`CLI.md` decision 7](../CLI.md#design-decisions): durability/replay is explicitly
   out of scope.
+- *Value-based redaction with a scan floor.* **Substring redaction applies to registered values
+  `≥ MASK_SCAN_LEN_MIN_BYTES` (default 6); shorter values redact on exact match only; provenance
+  tracking is deferred.** Chosen because scanning for very short values clobbers unrelated text,
+  and provenance machinery is not worth its cost in v0.
+- *The event log is capped, not sampled.* **`EVENT_LOG_MAX_BYTES` (default 256 MiB) bounds the
+  per-run ndjson log; on overflow the store emits a final `log.truncated` event and stops
+  persisting, while stdout streaming continues.** Chosen over sampling (a sampled record silently
+  lies about what happened) and over failing the run (observability overflow should not abort
+  work).
 
 **Open questions**
 
-- *Masking false-positive risk.* Redacting every occurrence of a short secret value could clobber an
-  unrelated substring. Is value-based redaction enough, or should secrets be tracked by provenance
-  (which field they flowed into) as well?
-- *Event log size.* The ndjson log is unbounded per run (one line per event); a very wide `map` emits
-  many `map.item.finish` events. Should the log be capped or sampled, mirroring the state cap?
+- None currently.

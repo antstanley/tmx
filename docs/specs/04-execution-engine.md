@@ -112,7 +112,9 @@ regardless of its own correctness:
   a secret and echoes it cannot surface it.
 
 This is defence-in-depth on the opt-in model: the schema decides *who gets* a secret; the Masker
-guarantees it *never appears* in anything emitted. The paired assertion (Tiger Style negative space):
+guarantees it *never appears* in anything emitted. Redaction is value-based; values shorter than
+`MASK_SCAN_LEN_MIN_BYTES` (default 6) are redacted on exact match only, not by substring scan
+(see [08](08-errors-and-observability.md#masking-at-the-boundary)). The paired assertion (Tiger Style negative space):
 the runner asserts the Masker registry contains every resolved secret **before** any output port can
 run, and every output port asserts it routed through the Masker.
 
@@ -193,11 +195,12 @@ Exceeding a limit is always a typed error naming the limit — never a panic or 
 | `JSON_DEPTH_MAX` | 128 | at parse / merge | `ValidationError` `json_too_deep` |
 | `CAPTURED_OUTPUT_MAX_BYTES` | 64 MiB | per `exec`/`run`/`fetch` adapter | `RunFailure` `output_too_large` |
 | `HOOK_TASKS_MAX` | 256 | preflight | `ValidationError` `too_many_hook_tasks` |
+| `EVENT_LOG_MAX_BYTES` | 256 MiB | at each `RunStore` event append | *(not an error)* emits `log.truncated`, stops persisting; the run continues |
 
 Concrete values are first-pass envelopes (the *rule* "declare every limit" is global
 [development-guidelines.md](development-guidelines.md); the *values* are this implementation's
-concern). They are tunable via config where it makes sense (`STATE_SIZE_MAX_BYTES`, `CONCURRENCY_MAX`); the
-structural ones (`FLOW_DEPTH_MAX`, `JSON_DEPTH_MAX`) are fixed.
+concern). They are tunable via config where it makes sense (`STATE_SIZE_MAX_BYTES`, `CONCURRENCY_MAX`,
+`EVENT_LOG_MAX_BYTES`); the structural ones (`FLOW_DEPTH_MAX`, `JSON_DEPTH_MAX`) are fixed.
 
 ---
 

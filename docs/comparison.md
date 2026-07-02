@@ -59,7 +59,7 @@ executed, since there is no runtime):
 - **`eval`** — a measurement task (distinct from `assert`'s boolean gate): score a `subject` over
   an optional `dataset` using `scorers` of three kinds (deterministic `matcher`, model-graded
   `llmRubric` LLM-as-judge, custom `exec`/`run`), weighted per case, with a `threshold` policy,
-  emitting a scorecard (`{cases, summary{mean,weightedMean,passRate,p50,p90,count}, passed}`).
+  emitting a scorecard (`{cases, summary{mean,weightedMean,passRate,min,p50,p90,count}, passed}`).
 - **`produces`** — an optional, author-supplied JSON Schema for a task's output, *specified to
   enable* static linting and autocomplete of downstream `${{ tasks.NAME.field }}` references plus
   an optional runtime conformance check. Purely declarative, per-task, no execution effect.

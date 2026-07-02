@@ -253,7 +253,7 @@ Output is merged under the task name:
 ```jsonc
 {
   "cases":   [ { "case": {…}, "output": …, "scores": { "quality": 0.9 }, "score": 0.9, "passed": true } ],
-  "summary": { "mean": 0.86, "weightedMean": 0.88, "passRate": 0.95, "p50": 0.9, "count": 20 },
+  "summary": { "mean": 0.86, "weightedMean": 0.88, "passRate": 0.95, "min": 0.55, "p50": 0.9, "p90": 0.97, "count": 20 },
   "passed":  true
 }
 ```

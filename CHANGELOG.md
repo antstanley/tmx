@@ -11,7 +11,13 @@ schema's `$id` path (e.g. `https://tmx.dev/schemas/0.2.0/tmx.schema.json`).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+
+- **`evalWith` output description reconciled** with the implementation spec
+  ([`docs/specs/`](./docs/specs/00-overview.md)): the scorecard `summary` now lists every metric
+  the `evalThreshold` enum can gate on — `min` and `p90` added to
+  `{ mean, weightedMean, passRate, p50, count }`. Description/example fix only (the README
+  scorecard example and `docs/comparison.md` updated to match); no shape or validation change.
 
 ## [0.2.0] - 2026-05-31
 

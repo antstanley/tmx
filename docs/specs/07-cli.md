@@ -59,6 +59,7 @@ The run flags realise [`CLI.md` §Run flags](../CLI.md#run-flags); the load-bear
 | `--matrix k=v1,v2` | desugar to a bounded `map`; cross-product across axes | `map` lowering |
 | `--continue-on-error` | force the envelope flag across all tasks | error policy |
 | `--timeout <dur>` | global wall-clock budget | `Clock` + cancellation |
+| `--grace <dur>` | grace period between a cancel signal and the hard stop (default `5s`) | cancellation |
 | `--max-state-size <size>` | adjust `STATE_SIZE_MAX_BYTES` | state cap |
 | `--check-produces[=warn\|strict]` | runtime `produces` conformance — warn (bare-flag default) or fail on mismatch; off when absent | `produces` check |
 | `--no-store` | do not record this run | `RunStore` |

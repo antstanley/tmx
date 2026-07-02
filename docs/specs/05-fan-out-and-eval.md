@@ -192,16 +192,16 @@ map task                                   eval task
   (default 0.5); the scorecard's overall `passed` is `true` without a threshold, else "`metric ≥
   min`".** Chosen so the scorecard is self-describing whether or not a gate is set, and so
   `passRate` has a defined meaning even when the gating metric is `mean`/`weightedMean`.
+- *The summary carries every gateable metric.* **`min` and `p90` are computed and emitted alongside
+  `mean`/`weightedMean`/`passRate`/`p50`/`count`; the data-model schema's `evalWith` output
+  description, the [README](../../README.md) scorecard example, and
+  [`comparison.md`](../comparison.md) are reconciled to the same list.** Chosen because the
+  `evalThreshold` `metric` enum allows gating on any of them — a gateable metric the engine does
+  not compute would be unimplementable.
+- *Cost/latency capture is out of scope for v0.* **The scorecard `summary` does not carry token
+  cost or latency for `llmRubric`/`chat-completion` scorers.** Chosen to keep the scorecard shape
+  minimal; revisit with real usage.
 
 **Open questions**
 
-- *Cost/latency capture for `llmRubric`/`chat-completion`.* Eval harnesses track token cost; should
-  the scorecard `summary` optionally carry it, or is that out of scope for v0? (Out of scope today.)
-- *`min`/`p90` in the summary — source inconsistency.* This spec's
-  [`Scorecard`](canonical-types.schema.json) `summary` includes `min` and `p90`, because the
-  `evalThreshold` `metric` enum in [`tmx.schema.json`](../tmx.schema.json) (and
-  [`comparison.md`](../comparison.md) for `p90`) allow gating on them — metrics the engine cannot
-  honour without computing them. But the schema's own `evalWith` output *description* and the
-  [README](../../README.md) scorecard example list `summary` as
-  `{ mean, weightedMean, passRate, p50, count }` (neither `min` nor `p90`). The implementation
-  computes and emits both; the data-model schema's description should be reconciled to match.
+- None currently.

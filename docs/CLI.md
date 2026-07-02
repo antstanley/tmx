@@ -159,6 +159,7 @@ run.
 | `--continue-on-error`          |       | Force the envelope flag across all tasks                                                                  |
 | `--check-produces[=warn\|strict]` |    | Runtime-check each task output against its `produces` schema — warn on mismatch (`warn`, the bare-flag default) or fail (`strict`); off when absent |
 | `--timeout <dur>`              |       | Global wall-clock budget (`30s`, `5m`)                                                                    |
+| `--grace <dur>`                |       | Grace period between a cancel signal (timeout / SIGINT) and the hard stop (default `5s`)                  |
 | `--max-state-size <size>`      |       | Adjust the in-memory Pipeline-state cap (default `512MiB`); exceeding it aborts the run                   |
 | `--no-store`                   |       | Do not record this run (see [Pipeline runs](#pipeline-runs))                                              |
 | `--watch`                      | `-w`  | Re-run on file change (dev loop)                                                                          |
