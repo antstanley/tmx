@@ -93,8 +93,17 @@ a `ValidationError`; in a directory run, **a single malformed task aborts the wh
 task executes** (the half-run folder is the failure mode preflight exists to prevent).
 
 Limits are enforced here too, as validation rather than as runtime surprises: a Flow with more than
-`TASKS_PER_FLOW_MAX` tasks, an `items` array longer than `FANOUT_WIDTH_MAX`, or a document nested
-deeper than `JSON_DEPTH_MAX` is rejected at preflight with a diagnostic naming the limit.
+`TASKS_PER_FLOW_MAX` tasks, a literal `items`/`dataset` array longer than `FANOUT_WIDTH_MAX`, or a
+document nested deeper than `JSON_DEPTH_MAX` is rejected at preflight with a diagnostic naming the
+limit. (A collection produced by a `${{ }}` expression can only be checked once resolved at run
+time, where the same violation is a `RunFailure` — see the
+[limits table](04-execution-engine.md#limits).) A task `concurrency` above `CONCURRENCY_MAX` — or a
+`--concurrency` flag above it — is likewise rejected here.
+
+Structural expectations the schema cannot express are validated here as well: every array-form task
+must carry a non-empty `name` (the map form's keys supply it) — a nameless task is a
+`ValidationError` (`missing_task_name`) — and duplicate task names are a `ResolutionError` during
+desugaring (see [01](01-domain-model.md#id-scheme)).
 
 ### `lint` (static analysis beyond schema)
 
@@ -104,6 +113,8 @@ deeper than `JSON_DEPTH_MAX` is rejected at preflight with a diagnostic naming t
 - Walk every `${{ tasks.NAME.field }}` against the referenced task's `produces` schema, catching
   typos like `tasks.build.artifcat` — the static `produces` checking the schema docs promise.
 - Flag inputs used-but-undeclared, and secrets used-but-not-listed in a task's `secrets`.
+- Flag duplicate or missing task `name`s in the array form — the same checks preflight enforces,
+  surfaced statically.
 - Detect cyclic `flow` imports.
 - Where a provider manifest has an `optionsSchema`, validate the environment's `options` against it.
 
@@ -115,8 +126,10 @@ deeper than `JSON_DEPTH_MAX` is rejected at preflight with a diagnostic naming t
 ## Capability check
 
 The final preflight step. The engine computes the set of ports the Flow will touch — from the task
-`type`s used and the `environment`'s provider — and verifies each **bound adapter is present and
-real**, not a stub or denying adapter.
+`type`s used and the `environment`'s provider, recursing into `map`/`eval` inner tasks, `eval`
+scorer kinds (`llmRubric` → `ChatModel`, `exec`/`run` → `ProcessRunner`), lifecycle hook bodies, and
+provider method bodies — and verifies each **bound adapter is present and real**, not a stub or
+denying adapter.
 
 ```
 CapabilitySet = { ports required by the flow }

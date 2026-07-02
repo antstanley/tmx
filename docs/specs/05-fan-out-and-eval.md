@@ -55,7 +55,8 @@ name.
 Algorithm:
 
 1. Resolve `items` to an array; **assert** `len ≤ FANOUT_WIDTH_MAX` (else `RunFailure`
-   `fanout_too_wide`).
+   `fanout_too_wide`; a literal over-limit array was already rejected at
+   [preflight](03-loading-and-preflight.md#validation)).
 2. Build `n` child scopes, each binding the element under `as` (with `.index`).
 3. `Scheduler.run_indexed(n, concurrency, |i| run inner task in child scope i)`.
 4. Collect into an ordered `Vec` — **assert output length equals `items` length** (Tiger Style
@@ -79,7 +80,7 @@ counterpart to `assert`'s *gate*: scores are continuous (`0..1`) and the task fa
 | Field | Meaning |
 |---|---|
 | `scorers` | One or more [scorers](#scorers) applied to each case's output. |
-| `subject` | The task/`flow` under test, run once per case; its output is scored (`${{ output }}`). Omit to score values already in state. |
+| `subject` | The task/`flow` under test, run once per case; its output is scored (`${{ output }}`). Omit to score values already in state — `${{ output }}` is then unbound and every scorer must set `actual` explicitly (`lint` checks this). |
 | `dataset` | Array of case objects (or a `${{ }}`/reference resolving to one); each binds as `${{ case }}`. Omit to run once. Length bounded by `FANOUT_WIDTH_MAX`. |
 | `concurrency` | Max cases at once (same bounded fan-out as `map`; default 1). |
 | `threshold` | Gating policy `{ metric, min, passScore? }` — without it, `eval` only reports. |
@@ -91,10 +92,12 @@ Algorithm:
    `${{ case }}`, then apply each scorer.
 3. **Per-case score** = the weighted mean of its scorers' scores. **Assert each scorer score is in
    `[0,1]`** before it is used.
-4. **Aggregate** into the `summary` (`mean`, `weightedMean`, `passRate`, `p50`, `p90`, `count`).
+4. **Aggregate** into the `summary` (`mean`, `weightedMean`, `passRate`, `min`, `p50`, `p90`,
+   `count`) — every metric the `evalThreshold` enum can gate on is computed.
 5. Apply the `threshold` (if any): a missed threshold is a **`RunFailure`** (exit 1) — the CLI's
-   eval-as-gate behaviour. Without a threshold, `passed` reflects per-case `passScore` only and the
-   task never fails on score.
+   eval-as-gate behaviour. Per-case `passed` flags always compare the case score to `passScore`
+   (default 0.5, taken from the threshold when one is set). Without a threshold the scorecard's
+   overall `passed` is `true` and the task never fails on score.
 6. Merge `state[name] = { cases, summary, passed }` ([`Scorecard`](canonical-types.schema.json)).
 
 ---
@@ -110,7 +113,8 @@ selected by `type`:
 | `llmRubric` | an LLM judging the output against a rubric (model-graded) | `ChatModel` |
 | `exec` / `run` | a command/script emitting a number (`{ "score": 0.9 }` or a bare number) | `ProcessRunner` |
 
-Common to all: `name`, optional `actual` (defaults to `${{ output }}`), `weight` (default 1, `> 0`).
+Common to all: `name`, optional `actual` (defaults to `${{ output }}`; must be set explicitly when
+the `eval` has no `subject`), `weight` (default 1, `> 0`).
 The `matcher` scorer reuses the **same matcher vocabulary as `assert`** — matchers are the shared
 primitive; `assert` consumes them as gates, `eval` as scorers. An `exec`/`run` scorer whose output is
 not a number in `[0,1]` is a `RunFailure` (`code: scorer_bad_output`).
@@ -184,18 +188,20 @@ map task                                   eval task
   to avoid a parallel vocabulary; `eval` is its own task type, distinct from `assert`.
 - *Fan-out width is bounded.* **`items`/`dataset` length `≤ FANOUT_WIDTH_MAX`.** Chosen so "bounded
   iteration" is literally bounded (Tiger Style); a wider collection is a typed error, not an OOM.
+- *`passScore` colours cases; `threshold.metric` gates.* **Per-case `passed` always uses `passScore`
+  (default 0.5); the scorecard's overall `passed` is `true` without a threshold, else "`metric ≥
+  min`".** Chosen so the scorecard is self-describing whether or not a gate is set, and so
+  `passRate` has a defined meaning even when the gating metric is `mean`/`weightedMean`.
 
 **Open questions**
 
-- *Default `passScore` interaction with `mean` metrics.* `passRate` uses `passScore`; when the
-  threshold metric is `mean`/`weightedMean`, `passScore` only colours per-case `passed` flags.
-  Confirm this is the intended split or whether a metric should imply a `passScore`.
 - *Cost/latency capture for `llmRubric`/`chat-completion`.* Eval harnesses track token cost; should
   the scorecard `summary` optionally carry it, or is that out of scope for v0? (Out of scope today.)
-- *`p90` in the summary — source inconsistency.* This spec's
-  [`Scorecard`](canonical-types.schema.json) `summary` includes `p90`, because the `evalThreshold`
-  `metric` enum in [`tmx.schema.json`](../tmx.schema.json) (and [`comparison.md`](../comparison.md))
-  allow gating on `p90` — a metric the engine cannot honour without computing it. But the schema's
-  own `evalWith` output *description* and the [README](../../README.md) scorecard example list
-  `summary` as `{ mean, weightedMean, passRate, p50, count }` (no `p90`). The implementation computes
-  and emits `p90`; the data-model schema's description should be reconciled to match.
+- *`min`/`p90` in the summary — source inconsistency.* This spec's
+  [`Scorecard`](canonical-types.schema.json) `summary` includes `min` and `p90`, because the
+  `evalThreshold` `metric` enum in [`tmx.schema.json`](../tmx.schema.json) (and
+  [`comparison.md`](../comparison.md) for `p90`) allow gating on them — metrics the engine cannot
+  honour without computing them. But the schema's own `evalWith` output *description* and the
+  [README](../../README.md) scorecard example list `summary` as
+  `{ mean, weightedMean, passRate, p50, count }` (neither `min` nor `p90`). The implementation
+  computes and emits both; the data-model schema's description should be reconciled to match.

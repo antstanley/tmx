@@ -47,9 +47,10 @@ call. It is generic over the port bundle so tests inject fakes.
       to the executor port; record timing via the `Clock` port. Emit `task.start`/`task.finish`.
    5. **Normalise output.** Non-JSON adapter result → valid UTF-8 text becomes `{ "message": … }`;
       bytes become `{ "blob": <base64> }`.
-   6. **Conformance (optional).** If `task.produces` is set **and** runtime checking is enabled,
-      validate the output via `SchemaValidator`; on mismatch emit a `Diagnostic` (warn by default,
-      fail under `--check-produces=strict`).
+   6. **Conformance (optional).** If `task.produces` is set **and** `--check-produces` is enabled,
+      validate the output via `SchemaValidator`; on mismatch emit a warning `Diagnostic` under
+      `warn` (the bare-flag default value), or fail the task under `strict`. With the flag absent,
+      outputs are not checked at run time.
    7. **Merge.** `state[task.output ?? task.name] = output`. **Assert** the serialised state size
       `≤ STATE_SIZE_MAX_BYTES` (see [state cap](#state-size-cap)); over-cap → `RunFailure` naming the task.
    8. **`change` hook.** If the merge changed the state, fire `change` — once per state-changing task,
@@ -60,9 +61,11 @@ call. It is generic over the port bundle so tests inject fakes.
 3. **Finish.** Fire the `destroy` hook (always — success or failure, like `finally`). Emit
    `run.finish`. Return the final state and `Vec<TaskResult>`.
 
-`assert`, `map`, and `flow` need **no adapter** — they are pure-core: matcher evaluation, the
-[Scheduler](05-fan-out-and-eval.md)-driven fan-out, and bounded recursion into `PipelineRunner`
-respectively. Hooks run their bodies through the *same* runner (so hooks inherit the full task model)
+`assert`, `map`, and `flow` need **no executor adapter of their own**: `assert` is pure matcher
+evaluation, `flow` is bounded recursion into `PipelineRunner`, and `map` is pure orchestration —
+though it runs over the [Scheduler](05-fan-out-and-eval.md) port, and its inner task (like an
+`eval`'s subject and scorers) brings its own port needs, which the
+[capability check](03-loading-and-preflight.md#capability-check) accounts for. Hooks run their bodies through the *same* runner (so hooks inherit the full task model)
 but one level deep — see [hooks](#lifecycle-hooks).
 
 ---
@@ -81,15 +84,17 @@ The `Scope` is a struct of borrowed references exposing these namespaces:
 |---|---|---|
 | `inputs.*` | everywhere | declared Flow `inputs` (CLI `--input`, calling `flow` task, defaults) |
 | `env.*` | everywhere | resolved context `env` |
-| `secrets.*` | everywhere (values masked unless the task opted in) | resolved context `secrets` |
+| `secrets.*` | only the names the task lists in its `secrets` array | resolved context `secrets` (opt-in per task) |
 | `tasks.*` | everywhere | the Pipeline `state` — `tasks.NAME.field` reads a prior task's output |
 | `item.*` (or the `as` alias) | inside a `map` inner task | the current element; `item.index` is the zero-based index |
 | `case.*`, `output` | inside `eval` scorers/subject | the current dataset case; `output` is the subject's output |
 | `matrix.*` | when run via `--matrix` sugar | the current matrix combination |
 
 A resolution failure (unknown namespace key, type mismatch against a declared input) is a
-`ResolutionError` (exit 4). `lint` catches the statically-checkable ones — including `produces`-typed
-`tasks.NAME.field` references — before a run.
+`ResolutionError` (exit 4). Referencing a secret the task did not list in its `secrets` array is
+likewise a `ResolutionError` — unrequested secrets are never resolved or bound at all (see
+[masking](#secrets--masking)). `lint` catches the statically-checkable ones — including
+`produces`-typed `tasks.NAME.field` references and used-but-unlisted secrets — before a run.
 
 ---
 
@@ -132,9 +137,11 @@ lifecycle — including after a failed provider teardown.
 ## `produces` conformance
 
 `produces` is **declarative**; it never affects execution. Runtime conformance checking is **opt-in**
-(off by default, per the schema): with `--check-produces=strict` the runner validates each task's
-output against its `produces` schema and fails on mismatch; otherwise a mismatch is a warning
-`Diagnostic`. `lint` always uses `produces` statically regardless of the runtime flag.
+(off by default, per the schema) via `--check-produces[=warn|strict]`: under `warn` — the value a
+bare `--check-produces` implies — the runner validates each task's output against its `produces`
+schema and emits a warning `Diagnostic` on mismatch; under `strict` a mismatch fails the task. With
+the flag absent, outputs are not checked at run time. `lint` always uses `produces` statically
+regardless of the runtime flag.
 
 ---
 
@@ -179,8 +186,8 @@ Exceeding a limit is always a typed error naming the limit — never a panic or 
 | `STATE_SIZE_MAX_BYTES` | 512 MiB | after each merge | `RunFailure` `state_cap_exceeded` |
 | `FLOW_DEPTH_MAX` | 8 | before each `flow` recursion | `ResolutionError` `flow_depth_exceeded` |
 | `TASKS_PER_FLOW_MAX` | 1024 | preflight | `ValidationError` `too_many_tasks` |
-| `FANOUT_WIDTH_MAX` | 100 000 | preflight / at `items` resolution | `RunFailure` `fanout_too_wide` |
-| `CONCURRENCY_MAX` | 256 | at scheduler submit | `ValidationError` `concurrency_too_high` |
+| `FANOUT_WIDTH_MAX` | 100 000 | preflight (literal array) / at `items`/`dataset` resolution (expression) | `ValidationError` (preflight) / `RunFailure` (runtime) `fanout_too_wide` |
+| `CONCURRENCY_MAX` | 256 | preflight (task field, `--concurrency`); asserted at scheduler submit | `ValidationError` `concurrency_too_high` |
 | `EXPR_LEN_MAX_BYTES` | 4 096 bytes | at interpolation | `ResolutionError` `expr_too_long` |
 | `EXPR_DEPTH_MAX` | 32 | at interpolation parse | `ResolutionError` `expr_too_deep` |
 | `JSON_DEPTH_MAX` | 128 | at parse / merge | `ValidationError` `json_too_deep` |
@@ -202,6 +209,8 @@ runner's load-bearing invariants:
 - **State is always a JSON object** at the top level — asserted on entry and after every merge.
 - **Merge key is non-empty**; the resolved `output ?? name` is a non-empty string — asserted before
   merge.
+- **Task names are unique** within the `ResolvedFlow` — asserted before the loop starts (duplicates
+  are already a `ResolutionError` at resolution; the assertion is the backstop).
 - **Task index is in `[0, n)`** for the bounded loop — asserted each iteration.
 - **State size `≤ STATE_SIZE_MAX_BYTES`** after every merge — asserted (and returned as a typed error, not
   only asserted, since it can be triggered by input).

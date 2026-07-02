@@ -121,9 +121,10 @@ task.
       the executor port; record timing.
    5. **Normalise output.** If the adapter returns non-JSON: valid UTF-8 text → `{ "message": … }`;
       bytes → `{ "blob": <base64> }` (per the README contract).
-   6. **Conformance (optional).** If `task.produces` is set *and* runtime checking is enabled,
-      validate the output via `SchemaValidator`; on mismatch emit a diagnostic (warn by default,
-      fail under `--check-produces=strict`).
+   6. **Conformance (optional).** If `task.produces` is set *and* `--check-produces` is enabled,
+      validate the output via `SchemaValidator`; on mismatch emit a warning diagnostic under
+      `warn` (the bare-flag default value), or fail the task under `strict`; with the flag absent,
+      outputs are not checked at run time.
    7. **Merge.** `state[task.output ?? task.name] = output`.
    8. **`change` hook.** If the merge changed the state, fire the context `change` hook
       ([SCHEMA.md resolution](./SCHEMA.md#still-open): once per state-changing task). Hooks are
@@ -151,7 +152,7 @@ boolean/`!` logic, and JS truthy/falsy — **no** function calls, assignment, or
 | --- | --- | --- |
 | `inputs.*` | everywhere | declared Flow `inputs` (CLI `--input`, calling `flow` task, defaults) |
 | `env.*` | everywhere | resolved context `env` |
-| `secrets.*` | everywhere (values masked unless task opted in) | resolved context `secrets` |
+| `secrets.*` | only the names the task lists in `secrets` | resolved context `secrets` (opt-in per task) |
 | `tasks.*` | everywhere | the Pipeline `state` — `tasks.NAME.field` reads a prior task's output |
 | `item.*` (or the `as` alias) | inside a `map` inner task | the current element; `item.index` is the zero-based index |
 | `case.*`, `output` | inside `eval` scorers/subject | the current dataset case; `output` is the subject's output |
@@ -415,9 +416,9 @@ one-level hooks, and the in-memory state cap — folded into [Design decisions](
 - **Concurrency & ordering of `map` side effects.** Output order is defined (item order); should the
   spec also constrain *observable* side-effect ordering under `concurrency > 1`, or leave it
   explicitly unspecified?
-- **Host language.** The ports are language-neutral; committing to a host (Go / Rust / TypeScript)
-  would fix the port idioms (interfaces vs traits, error model, async primitive) — deferred until the
-  first implementation spike.
+- **Host language.** **Resolved outside this draft:** the [`docs/specs/`](specs/00-overview.md)
+  implementation spec commits to **Rust** (Tiger Style) and fixes the port idioms — traits, a typed
+  `RunError`, async only at the adapter edge.
 
 ## Related
 

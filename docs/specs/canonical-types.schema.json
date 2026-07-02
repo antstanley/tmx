@@ -134,13 +134,13 @@
           "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
         },
         "score": { "type": "number", "minimum": 0, "maximum": 1, "description": "The case score: the weighted mean of its scorers' scores." },
-        "passed": { "type": "boolean", "description": "Whether the case score is at or above the eval threshold's passScore." }
+        "passed": { "type": "boolean", "description": "Whether the case score is at or above passScore (default 0.5; taken from the eval threshold when one is set)." }
       }
     },
 
     "EvalSummary": {
       "title": "Eval summary",
-      "description": "Aggregate metrics over all cases in a scorecard. Includes `p90` so an `evalThreshold` with `metric: p90` can be honoured; note the data-model schema's evalWith output description and the README scorecard example currently list summary without `p90` (see 05-fan-out-and-eval.md open questions).",
+      "description": "Aggregate metrics over all cases in a scorecard. Includes every metric the `evalThreshold` enum can gate on — `min` and `p90` included; note the data-model schema's evalWith output description and the README scorecard example currently list summary without `min`/`p90` (see 05-fan-out-and-eval.md open questions).",
       "type": "object",
       "additionalProperties": false,
       "required": ["mean", "weightedMean", "passRate", "count"],
@@ -148,6 +148,7 @@
         "mean": { "type": "number", "minimum": 0, "maximum": 1 },
         "weightedMean": { "type": "number", "minimum": 0, "maximum": 1 },
         "passRate": { "type": "number", "minimum": 0, "maximum": 1, "description": "Fraction of cases whose score is at or above passScore." },
+        "min": { "type": "number", "minimum": 0, "maximum": 1, "description": "The minimum case score." },
         "p50": { "type": "number", "minimum": 0, "maximum": 1 },
         "p90": { "type": "number", "minimum": 0, "maximum": 1 },
         "count": { "type": "integer", "minimum": 0 }
@@ -169,8 +170,9 @@
 
     "Event": {
       "title": "Run event",
-      "description": "One entry in the canonical event stream. The `event` field discriminates the variant; the ndjson reporter emits one Event per line. Every payload value is passed through the Masker before emission.",
+      "description": "One entry in the canonical event stream. The `event` field discriminates the variant; the ndjson reporter emits one Event per line. Every payload value is passed through the Masker before emission. Closed like every other $def here: a new payload field is a schema change, not an ad-hoc addition.",
       "type": "object",
+      "additionalProperties": false,
       "required": ["event"],
       "properties": {
         "event": {
@@ -188,7 +190,9 @@
         "status": { "type": "string", "description": "Outcome; present on *.finish events." },
         "ms": { "$ref": "#/$defs/Milliseconds" },
         "reason": { "type": "string", "description": "Why a task was skipped; present on task.skip (e.g. 'if=false')." },
-        "output": { "description": "Masked task output; present on task.finish." }
+        "output": { "description": "Masked task output; present on task.finish." },
+        "index": { "type": "integer", "minimum": 0, "description": "Zero-based item/case index; present on map.item.finish and eval.case.finish." },
+        "error": { "$ref": "#/$defs/RunError", "description": "The failure that occurred; present on task.error." }
       }
     },
 

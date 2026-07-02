@@ -78,17 +78,19 @@ core reaches the world only through **driven ports**, each with one built-in ada
                              │                                │
   ┌──────────┐               │  PipelineRunner   Interpolator │   ┌──▶ ProcessRunner   exec · run
   │ tmx-cli  │──┐            │  Masker  MatcherEngine          │   ├──▶ HttpClient      fetch
-  └──────────┘  │  use cases │  Scheduler  HookRunner          │ p ├──▶ FileSystem      file
-  ┌──────────┐  ├──RunFlow──▶│  Preflight  StateMerge          │ o ├──▶ ObjectStore     store
+  └──────────┘  │  use cases │  Preflight  StateMerge          │ p ├──▶ FileSystem      file
+  ┌──────────┐  ├──RunFlow──▶│  HookRunner                     │ o ├──▶ ObjectStore     store
   │ library  │──┤  Validate  │                                 │ r ├──▶ ChatModel       chat-completion
   └──────────┘  │  Lint …    │   domain entities + port traits │ t ├──▶ SecretResolver  env·file·provider
-  ┌──────────┐  │            │   (the core OWNS the traits;    │ s ├──▶ EnvProvider     bootstrap·deploy·…
+  ┌──────────┐  │            │   (the core OWNS the traits;    │ s ├──▶ EnvironmentProvider  bootstrap·deploy·…
   │ HTTP srv │──┘            │    depends on no adapter)        │   ├──▶ RunStore        .tmx/runs
   └──────────┘               │                                 │   ├──▶ EventSink       reporters
                              └──────────────────────────────┘   ├──▶ SourceLoader    yaml·json·jsonc·toml
+                                                                 ├──▶ ReferenceResolver  file paths (v0)
                                                                  ├──▶ SchemaValidator JSON Schema 2020-12
         Dependencies point INWARD: tmx-cli → tmx-adapters →     ├──▶ Clock           time · timeouts
-        tmx-core. The core is handed ports at composition time. └──▶ IdGenerator     UUIDv7
+        tmx-core. The core is handed ports at composition time. ├──▶ IdGenerator     UUIDv7
+                                                                 └──▶ Scheduler       bounded concurrency
 ```
 
 - **`tmx-core`** — the pure execution model and the port *traits*. No `tokio`, no `std::fs`, no

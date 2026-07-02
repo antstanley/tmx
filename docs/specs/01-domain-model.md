@@ -25,9 +25,11 @@ lexical sort of run ids is chronological — `tmx runs list` needs no separate t
 generator is a port so tests inject a deterministic sequence.
 
 There is no global task id; a task is identified by its `name` within its Flow, which is also the key
-its output merges under (`state[name] = output`). Uniqueness of `name` within a Flow is a documented
-expectation the linter checks; the runner asserts it before execution (see
-[Invariants](04-execution-engine.md#invariants--assertions)).
+its output merges under (`state[name] = output`). Every array-form task must carry an explicit,
+non-empty `name` (the map form's keys supply it) — a nameless task is a `ValidationError` at
+preflight ([03](03-loading-and-preflight.md#validation)). Duplicate names are a `ResolutionError`
+at resolution (see [Decisions](#assumptions-and-open-questions)); the runner asserts uniqueness
+before execution as a backstop (see [Invariants](04-execution-engine.md#invariants--assertions)).
 
 ---
 
@@ -102,7 +104,7 @@ These have no place in the input schema; they are defined by
 | `Pipeline`      | struct                                 | — (internal)                 | A run in flight: `id: RunId`, `state: PipelineState`, `status: RunStatus`, `results: Vec<TaskResult>`.                                                                                                         |
 | `PipelineState` | `serde_json::Value` (always an object) | `PipelineState`              | The merged JSON threaded through tasks. Bounded by the state cap.                                                                                                                                              |
 | `Scope`         | struct of borrowed refs                | — (internal)                 | The read-only binding environment an expression sees (see [scopes](04-execution-engine.md#state--interpolation-scopes)).                                                                                       |
-| `TaskResult`    | struct                                 | `TaskResult`                 | `{ name, status, output?, error?, started_at, ms }` for one task.                                                                                                                                              |
+| `TaskResult`    | struct                                 | `TaskResult`                 | `{ name, status, output?, error?, startedAt, ms }` for one task.                                                                                                                                               |
 | `Scorecard`     | struct                                 | `Scorecard`                  | The `eval` result: `{ cases, summary, passed }`.                                                                                                                                                               |
 | `Diagnostic`    | struct                                 | `Diagnostic`                 | A `validate`/`lint` finding: `{ severity, code, message, path? }`.                                                                                                                                             |
 | `Event`         | enum (tagged)                          | `Event`                      | One canonical run event; see [08](08-errors-and-observability.md#events--reporters).                                                                                                                           |
@@ -181,7 +183,7 @@ engine must support; each maps to a namespace in the [`Scope`](04-execution-engi
 | --------------------------------- | ----------------- | ---------------------------------------------------------- |
 | `${{ inputs.NAME }}`              | `inputs`          | a declared Flow input value                                |
 | `${{ env.KEY }}`                  | `env`             | a resolved context env var                                 |
-| `${{ secrets.NAME }}`             | `secrets`         | a resolved secret (masked unless the task opted in)        |
+| `${{ secrets.NAME }}`             | `secrets`         | a secret the task listed in its `secrets` array; an unrequested name is not in scope (`ResolutionError`) |
 | `${{ tasks.NAME.field }}`         | `tasks`           | a prior task's merged output (`PipelineState[NAME].field`) |
 | `${{ item.* }}` / `${{ <as>.* }}` | `item`            | the current `map` element; `item.index` is its position    |
 | `${{ case.* }}`, `${{ output }}`  | `case` / `output` | the current `eval` case and the subject's output           |
@@ -214,10 +216,13 @@ does (see [03](03-loading-and-preflight.md#lint-static-analysis-beyond-schema)).
   output.** Chosen because [`SCHEMA.md` decision 6](../SCHEMA.md#design-decisions-interpretations-of-the-readme) left the Pipeline
   out of scope, leaving the event/record/scorecard shapes undocumented; consumers (CI, dashboards)
   need a contract.
+- _Duplicate task names are an error, not auto-renamed._ **Two tasks with the same `name` (possible
+  only in the array form; map keys are unique by construction) are a `ResolutionError` at
+  resolution; the runner asserts uniqueness as a backstop.** Chosen over appending an incrementing
+  suffix (`task-01`, `task-02`) because a generated name would make `${{ tasks.NAME.field }}` reads
+  ambiguous, defeat `lint`'s static `produces` checking, and silently change the state keys the
+  author declared; an explicit rename keeps every reference deterministic.
 
 **Open questions**
 
-- _Duplicate task names across the map form._ The map form keys are unique by construction, but the
-  array form permits two tasks with the same `name`. The runner asserts uniqueness today; should the
-  schema instead forbid it, or should later-wins merge be defined? (Currently: a `ResolutionError`.)
-  Answer: if duplicate task names, append an incrementing integer suffix to the task name to identify it in the pipeline. ie task-01, task-02
+- None currently.
