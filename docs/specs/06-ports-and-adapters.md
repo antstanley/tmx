@@ -173,9 +173,28 @@ extension goes through `flow` import, not new task types (no plugin-executor por
 - *Cancellation grace period defaults to 5 s.* **In-flight adapters get `CANCEL_GRACE_MS` (default
   5 000 ms) between the cancel signal and the hard stop, overridable via `--grace <dur>`.** Chosen
   as long enough for a clean HTTP/process shutdown without holding a cancelled run hostage.
+- *Plugin executors, if ever added, are external processes — never in-process code.* The feature
+  itself stays deferred ([`RUNTIME.md` decision 8](../RUNTIME.md#design-decisions)), but its trust
+  boundary is fixed now so a future design cannot drift toward in-process loading. **A plugin task
+  is exactly as trusted as an `exec` task: an external process with declared inputs, bounded
+  output, masked emission, and no reach into the engine.** Concretely, a plugin would be a single
+  `PluginExecutor` driven port where:
+  - the plugin is a separate **binary invoked per task** (no dylib/FFI, no in-process interpreter),
+    mirroring the `BinaryProvider` model — plugin code never executes in the engine's address
+    space, so `#![forbid(unsafe_code)]` and the closed core stay meaningful;
+  - it registers via a **manifest** (a sibling of [`tmx-provider.schema.json`](../tmx-provider.schema.json)):
+    the `type` it provides, its binary, an `optionsSchema` for its `with` block (validated at
+    preflight, like provider options), and an optional `produces` for its output;
+  - it receives **only the resolved, interpolated `with` plus the secrets the task listed**, as
+    JSON on stdin — never the Pipeline state, other tasks' outputs, or unrequested secrets; its
+    stdout is treated like any adapter result (bounded by `CAPTURED_OUTPUT_MAX_BYTES`, normalised,
+    Masker-redacted, subject to the state cap and per-task `timeout`);
+  - execution routes through the existing **`ProcessRunner` port**, so a sandboxed composition
+    that injects a denying `ProcessRunner` automatically denies all plugins — no new sandbox
+    surface;
+  - the **capability check** requires the plugin's manifest to be registered and its binary
+    present, failing preflight with an `EnvironmentError` naming the missing plugin.
 
 **Open questions**
 
-- *Plugin-executor port.* A registered custom `type` is deferred, not designed out
-  ([`RUNTIME.md` decision 8](../RUNTIME.md#design-decisions)). If added, it becomes a new driven port
-  with a strict trust boundary — what is that boundary?
+- None currently.
