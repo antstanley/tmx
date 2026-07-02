@@ -168,7 +168,9 @@ The bound (default 8) is small and named; it is a limit, not a tuning knob, and 
 ## State size cap
 
 The whole Pipeline state is held **in memory** and threaded through tasks. To keep that bounded, the
-serialised state has a default cap of **512 MiB** (`STATE_SIZE_MAX_BYTES`). A merge that would exceed it
+serialised state has a default cap of **512 MiB** (`STATE_SIZE_MAX_BYTES`). The measured quantity is
+the **canonical-JSON byte length** (UTF-8, no insignificant whitespace), tracked incrementally at
+each merge — reproducible across hosts, unlike an in-memory estimate. A merge that would exceed it
 **aborts the run** (`RunFailure`, `code: state_cap_exceeded`) naming the offending task, rather than
 growing without limit. `{ "blob": … }` outputs and large `map`/`eval` result arrays count toward the
 cap. The cap is raised via `--max-state-size`, the `limits.maxStateSize` config key, or
@@ -262,11 +264,16 @@ optionally asserted as a backstop.
 - *Masking at the output boundary, not by callers.* **The core registers sensitive values; every
   output port redacts.** Per [`RUNTIME.md` decision 4](../RUNTIME.md#design-decisions): one forgetful
   adapter would otherwise leak.
+- *Side-effect ordering under `concurrency > 1` is explicitly unspecified.* **Only the collected
+  output order (item order) is guaranteed; the interleaving of observable side effects during
+  fan-out carries no ordering contract.** Chosen so the Scheduler adapter is free to run items
+  truly concurrently; a Flow that needs ordered side effects sets `concurrency: 1` (the default).
+- *State size is measured as canonical-JSON bytes, tracked incrementally.* **The cap compares the
+  byte length of the state's canonical JSON serialisation (UTF-8, no insignificant whitespace),
+  maintained incrementally at each merge rather than re-serialised wholesale.** Chosen over an
+  in-memory estimate because serialised bytes are reproducible across hosts and allocators — which
+  is the point of the cap.
 
 **Open questions**
 
-- *Observable side-effect ordering under `concurrency > 1`.* Output order is defined (item order);
-  should the spec also constrain the *order of observable side effects* during fan-out, or leave it
-  explicitly unspecified? (Open in [`RUNTIME.md`](../RUNTIME.md#open-questions).)
-- *Incremental state-size accounting.* The exact accounting (bytes of canonical JSON vs in-memory
-  estimate) needs pinning so the cap is reproducible across hosts.
+- None currently.

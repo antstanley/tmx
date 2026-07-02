@@ -169,10 +169,12 @@ See [02-crate-architecture.md](02-crate-architecture.md) for the concrete worksp
   (`reqwest`, the S3 SDK, process spawning); the bounded-everything, explicit-limit, dense-assertion
   core of Tiger Style is kept in full. See [architecture-principles.md](architecture-principles.md).
 
+- *Library and HTTP hosts are specified after the CLI ships.* **v0 specifies only the CLI driving
+  adapter; the library and HTTP-server hosts are specified once the CLI is implemented.** The use
+  cases and composition root are already shaped for all three (see
+  [02-crate-architecture.md](02-crate-architecture.md)), so nothing in v0 forecloses them.
+
 **Open questions**
 
-- *Library and HTTP-server driving adapters.* The use cases are designed to support embedding and an
-  HTTP host (see [02-crate-architecture.md](02-crate-architecture.md)), but only the CLI adapter is
-  specified in detail here. When are the other two specified — alongside v0, or once the CLI ships?
 - *Concrete limit values.* The [limits table](04-execution-engine.md#limits) fixes defaults; several
   (max tasks per flow, max fan-out width) are first-pass envelopes, tunable once real Flows exist.

@@ -413,9 +413,10 @@ Runtime v0 review resolved the closed task enum, preflight validation + capabili
 one-level hooks, and the in-memory state cap — folded into [Design decisions](#design-decisions)
 8–11. What remains open:
 
-- **Concurrency & ordering of `map` side effects.** Output order is defined (item order); should the
-  spec also constrain *observable* side-effect ordering under `concurrency > 1`, or leave it
-  explicitly unspecified?
+- **Concurrency & ordering of `map` side effects.** **Resolved outside this draft:**
+  [`docs/specs/04`](specs/04-execution-engine.md) declares side-effect ordering under
+  `concurrency > 1` explicitly unspecified — only output order (item order) is guaranteed; ordered
+  side effects require `concurrency: 1`.
 - **Host language.** **Resolved outside this draft:** the [`docs/specs/`](specs/00-overview.md)
   implementation spec commits to **Rust** (Tiger Style) and fixes the port idioms — traits, a typed
   `RunError`, async only at the adapter edge.

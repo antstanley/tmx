@@ -176,10 +176,14 @@ falls straight out: a missed `eval` threshold is `run_failure` → exit 1 → bl
   avoiding the `-o FILE`/`--output json` collision.
 - *`--matrix` lowers to `map`; an authored `map` wins.* Per [`CLI.md` decision 8](../CLI.md#design-decisions):
   the authored definition is the source of truth; silent wrapping would surprise.
+- *`--watch` runs are ordinary runs.* **Each re-run is a full run with its own run-store record;
+  SIGINT stops the watcher, and the process exits with the most recent run's exit code (`0` if it
+  passed).** Chosen because a per-session record would need new semantics for a partially failed
+  session; one record per run keeps `tmx runs` uniform.
+- *Library and HTTP driving adapters are specified after the CLI ships.* Per the
+  [overview decision](00-overview.md#assumptions-and-open-questions); the use cases already
+  support all three hosts.
 
 **Open questions**
 
-- *`--watch` and the run loop.* `-w` re-runs on file change; how it interacts with the run store
-  (one record per re-run, or a session?) and cancellation is unspecified.
-- *Library/HTTP driving adapters.* The use cases support them, but only the CLI adapter is specified;
-  the others are deferred (see [00-overview.md](00-overview.md#assumptions-and-open-questions)).
+- None currently.

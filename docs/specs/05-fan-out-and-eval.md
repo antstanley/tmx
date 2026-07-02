@@ -34,7 +34,10 @@ trait Scheduler {
   `≤ concurrency`; the returned vector has length `n` in index order.
 
 `concurrency` defaults to 1 (strictly in order). There is no unbounded or distributed parallelism —
-only this bounded iteration over a declared collection.
+only this bounded iteration over a declared collection. Under `concurrency > 1` the interleaving of
+observable side effects is **explicitly unspecified** — only the collected output order is
+guaranteed; a Flow that needs ordered side effects keeps `concurrency: 1` (see
+[04 Decisions](04-execution-engine.md#assumptions-and-open-questions)).
 
 ---
 
