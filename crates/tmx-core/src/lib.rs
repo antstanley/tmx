@@ -22,10 +22,12 @@
 //! outside world. Adapter and use-case *bodies* arrive in later tasks.
 
 pub mod error;
+pub mod interpolate;
 pub mod model;
 pub mod ports;
 
 pub use error::{ErrorCategory, RunError};
+pub use interpolate::evaluate;
 pub use model::{
     BlobWrapper, Diagnostic, EvalCase, EvalSummary, Event, MessageWrapper, Milliseconds, Pipeline,
     PipelineState, ResolvedFlow, RunId, RunRecord, RunStatus, Scope, Scorecard, Severity,
