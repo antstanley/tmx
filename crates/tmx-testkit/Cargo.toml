@@ -7,12 +7,21 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
-# Depends on tmx-core + tmx-schema ONLY — deliberately no tokio, no reqwest, no I/O crate — so the
-# fakes stay inside the same purity boundary as the core they fake (scripts/purity.sh covers this
-# crate too). The fakes arrive with task 06.
+# Depends on tmx-core + tmx-schema ONLY (plus the same pure data/trait-support crates the core
+# uses) — deliberately no tokio, no reqwest, no I/O crate — so the fakes stay inside the same purity
+# boundary as the core they fake (scripts/purity.sh covers this crate too). The fakes arrive with
+# task 06.
+#
+# serde_json/indexmap are the pure data crates the driven-port payloads speak (`Value`, `IndexMap`);
+# async-trait is TRAIT-SUPPORT ONLY — a compile-time proc-macro that restores object safety for the
+# effecting driven ports, with no async-runtime/I/O edge (exactly as tmx-core carries it). None of
+# the three is in the purity gate's forbidden set, so the boundary stays intact.
 [dependencies]
 tmx-core = { path = "../tmx-core" }
 tmx-schema = { path = "../tmx-schema" }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+async-trait = "0.1"
 
 [lints]
 workspace = true
