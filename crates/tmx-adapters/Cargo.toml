@@ -1,0 +1,18 @@
+[package]
+name = "tmx-adapters"
+description = "Built-in adapters implementing the tmx-core driven ports (process, HTTP, fs, store, chat, …)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Depends on tmx-core (the port traits it implements) and tmx-schema. This is the crate where the
+# async runtime and heavy I/O deps (tokio, reqwest, the S3 SDK, uuid, a JSON-Schema validator)
+# live — each behind a Cargo feature — arriving with their adapter tasks (13–24).
+[dependencies]
+tmx-core = { path = "../tmx-core" }
+tmx-schema = { path = "../tmx-schema" }
+
+[lints]
+workspace = true

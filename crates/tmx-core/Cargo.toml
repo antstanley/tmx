@@ -1,0 +1,16 @@
+[package]
+name = "tmx-core"
+description = "The pure hexagonal domain core: runtime model, typed errors, domain services, and the port traits."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Depends on tmx-schema only. NO async runtime and NO I/O crate may ever be added here — that is
+# the purity boundary scripts/purity.sh guards. serde_json / thiserror arrive with task 04.
+[dependencies]
+tmx-schema = { path = "../tmx-schema" }
+
+[lints]
+workspace = true

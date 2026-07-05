@@ -1,0 +1,22 @@
+[package]
+name = "tmx-cli"
+description = "The `tmx` command-line binary: driving adapter and composition root."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "tmx"
+path = "src/main.rs"
+
+# The top of the dependency graph: depends on tmx-adapters (concrete ports), tmx-core (use cases),
+# and tmx-schema (config/data). clap and the composition root arrive with the CLI tasks (17 onward).
+[dependencies]
+tmx-adapters = { path = "../tmx-adapters" }
+tmx-core = { path = "../tmx-core" }
+tmx-schema = { path = "../tmx-schema" }
+
+[lints]
+workspace = true

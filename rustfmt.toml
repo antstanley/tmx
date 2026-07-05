@@ -1,0 +1,3 @@
+# 100 columns per line (development-guidelines.md §Code style). The edition rustfmt formats
+# against is read from each crate's manifest by `cargo fmt`, so it is not repeated here.
+max_width = 100

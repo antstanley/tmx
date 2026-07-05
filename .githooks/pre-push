@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Git pre-push hook: validate TMX schemas + examples before a `git push`.
+# Git pre-push hook: run the full TMX gate before a `git push`.
 #
 # NOTE: Jujutsu does not run Git hooks. This fires only on plain `git push`
 # (and many CI providers). When pushing with jj, use `scripts/push.sh` instead.
+#
+# The gate (scripts/gate.sh) is shared with scripts/push.sh: cargo fmt --check · clippy -D warnings
+# · nextest · the dependency purity check · the schema/example validation.
 #
 # Enabled via:  git config core.hooksPath .githooks
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
-echo "pre-push: validating TMX schemas + examples…"
-if ! "$ROOT/scripts/validate.sh"; then
-  echo "✗ schema validation failed — push aborted." >&2
+echo "pre-push: running the full TMX gate (fmt · clippy · nextest · purity · schema)…"
+if ! "$ROOT/scripts/gate.sh"; then
+  echo "✗ gate failed — push aborted." >&2
   exit 1
 fi
-echo "✓ schema validation passed."
+echo "✓ gate passed."

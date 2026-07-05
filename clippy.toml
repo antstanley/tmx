@@ -1,0 +1,8 @@
+# clippy.toml — every opt-out carries its reason (development-guidelines.md §Formatting and linting).
+#
+# `clippy::unwrap_used` and `clippy::expect_used` are denied workspace-wide (see the workspace
+# `[lints.clippy]` table). These two keys re-permit them inside test code only: in a test an
+# `unwrap()`/`expect()` IS the assertion and its panic IS the failure signal, so denying them there
+# would force noisier, less direct tests without buying any safety.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

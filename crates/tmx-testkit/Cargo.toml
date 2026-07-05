@@ -1,0 +1,18 @@
+[package]
+name = "tmx-testkit"
+description = "In-memory fake adapters (serial scheduler, fixed clock/ids, recording I/O) for deterministic tests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# Depends on tmx-core + tmx-schema ONLY — deliberately no tokio, no reqwest, no I/O crate — so the
+# fakes stay inside the same purity boundary as the core they fake (scripts/purity.sh covers this
+# crate too). The fakes arrive with task 06.
+[dependencies]
+tmx-core = { path = "../tmx-core" }
+tmx-schema = { path = "../tmx-schema" }
+
+[lints]
+workspace = true
