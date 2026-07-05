@@ -33,15 +33,15 @@ The output of a passing preflight is a `ResolvedFlow` ready for the
 ## Source loading and `kind` dispatch
 
 `SourceLoader` parses a file to the JSON model; one adapter per format, selected by extension. All
-four produce the *same* model, so everything downstream is format-agnostic (TMX's defining trait).
+four produce the _same_ model, so everything downstream is format-agnostic (TMX's defining trait).
 
-| `kind` (or convention) | Schema (`$defs`) | Rust target |
-|---|---|---|
-| `flow` (default for a top-level doc) | `flow` | `Flow` |
-| `environment` (`environment.*`) | `environment` | `Environment` |
-| `context` (`context.*`) | `context` | `Context` |
-| `task` (any filename) | `task` | `Task` |
-| `provider` | provider manifest | `ProviderManifest` |
+| `kind` (or convention)               | Schema (`$defs`)  | Rust target        |
+| ------------------------------------ | ----------------- | ------------------ |
+| `flow` (default for a top-level doc) | `flow`            | `Flow`             |
+| `environment` (`environment.*`)      | `environment`     | `Environment`      |
+| `context` (`context.*`)              | `context`         | `Context`          |
+| `task` (any filename)                | `task`            | `Task`             |
+| `provider`                           | provider manifest | `ProviderManifest` |
 
 `kind` is **optional**; when absent, the loader falls back to filename convention (the reserved
 `environment.*` / `context.*` names) and to "a top-level document with `tasks` is a Flow". Task files
@@ -106,6 +106,13 @@ must carry a non-empty `name` (the map form's keys supply it) — a nameless tas
 `ValidationError` (`missing_task_name`) — and duplicate task names are a `ResolutionError` during
 desugaring (see [01](01-domain-model.md#id-scheme)).
 
+Newer-spec tolerance is settled **here, at validation**, not deferred to dispatch: the validator
+runs in a relaxed mode that accepts the constructs it knows and flags any it does not. A Flow whose
+features imply a **newer** spec version draws the compatibility warning at this point (on stderr,
+per [`CLI.md`](../CLI.md#spec-version-compatibility)); a construct the CLI cannot interpret — an
+unknown task `type`, field, or `with` shape — is then a `ValidationError` (exit 3) raised in
+preflight, before any task runs, rather than a surprise when the dispatcher reaches it.
+
 ### `lint` (static analysis beyond schema)
 
 `lint` is a separate, deeper pass (still no side effects), backing `tmx lint`:
@@ -141,7 +148,7 @@ for each required port:
 
 A Flow that uses `store` requires a working `ObjectStore`; if one is not wired, preflight fails fast
 naming the missing capability, rather than aborting mid-run at the first `store` task. This is what
-makes sandboxing safe *and* legible: a denying adapter set is reported up front, not discovered
+makes sandboxing safe _and_ legible: a denying adapter set is reported up front, not discovered
 half-way.
 
 ---
@@ -192,26 +199,29 @@ to the model in `tmx-schema`. The use cases `ValidateArtifacts`, `LintFlow`, and
 
 **Decisions**
 
-- *`validate` and `lint` are split.* **`validate` is pure schema (`kind`-dispatch, a port of
+- _`validate` and `lint` are split._ **`validate` is pure schema (`kind`-dispatch, a port of
   `scripts/validate.sh`); `lint` adds reference resolution and `produces`-based interpolation
   checking.** Chosen per [`CLI.md` decision 4](../CLI.md#design-decisions): two depths, both exit 3,
   distinct responsibilities.
-- *Limits enforced at preflight, not mid-run.* **Over-limit task counts, fan-out widths, and JSON
+- _Limits enforced at preflight, not mid-run._ **Over-limit task counts, fan-out widths, and JSON
   depths are `ValidationError`s before execution.** Chosen so a Flow that would blow a limit fails
   fast and legibly, consistent with Tiger Style "every limit explicit and checked".
-- *Capability check before side effects.* **Missing real adapters are an `EnvironmentError` up
+- _Capability check before side effects._ **Missing real adapters are an `EnvironmentError` up
   front.** Chosen per [`RUNTIME.md` decision 9](../RUNTIME.md#design-decisions) over discovering the
   gap at the first failing task.
-- *References are file paths in v0.* **No registry beyond the local provider map.** Chosen per
+- _References are file paths in v0._ **No registry beyond the local provider map.** Chosen per
   [`CLI.md` decision 11](../CLI.md#design-decisions); a resolver spec is deferred.
-- *Natural filename order is byte-wise + numeric-aware.* **Filenames compare byte-wise (ASCII,
+- _Natural filename order is byte-wise + numeric-aware._ **Filenames compare byte-wise (ASCII,
   case-sensitive, locale-independent), with maximal runs of ASCII digits compared as unsigned
   integers.** Chosen so directory runs are reproducible across hosts — locale-aware collation
   would make task order host-dependent.
+- _Newer-spec tolerance is resolved at validation._ **A Flow whose features imply a newer spec is
+  handled in a relaxed schema mode at preflight: the compatibility warning is emitted early, at
+  validation, and an unknown construct (task `type`, field, or `with` shape) is a `ValidationError`
+  (exit 3) there — not a dispatch-time discovery.** Chosen per
+  [`CLI.md` spec-version compatibility](../CLI.md#spec-version-compatibility), consistent with the
+  other "fail fast in preflight, before side effects" decisions above.
 
 **Open questions**
 
-- *Newer-spec tolerance mechanics.* [`CLI.md`](../CLI.md#spec-version-compatibility) says a Flow on a
-  newer spec warns but runs unless it uses an unknown construct. Is "unknown construct" detected at
-  validation (a relaxed schema mode) or at dispatch (an unknown `type`)? Settle when a second spec
-  version exists.
+- None currently.

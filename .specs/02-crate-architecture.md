@@ -22,6 +22,7 @@ tmx/
 │   ├── tmx-schema/            # input data model: Flow/Task/Context/Environment (+ limits)
 │   ├── tmx-core/              # pure domain core + port TRAITS + use cases
 │   ├── tmx-adapters/          # one built-in adapter per driven port
+│   ├── tmx-testkit/           # fake adapters (SerialScheduler, fixed Clock/IdGenerator, …)
 │   └── tmx-cli/               # the `tmx` binary: driving adapter + composition root
 └── tests/                     # workspace-level conformance (golden flows)
 ```
@@ -107,7 +108,33 @@ tmx-adapters/src/
 ├── validate.rs     # JsonSchemaValidator (Draft 2020-12)
 ├── clock.rs        # SystemClock
 ├── idgen.rs        # Uuidv7Generator
-└── scheduler.rs    # TokioScheduler (bounded) — test crate provides SerialScheduler
+└── scheduler.rs    # TokioScheduler (bounded) — tmx-testkit provides SerialScheduler
+```
+
+### `tmx-testkit` — the fake adapters
+
+One in-memory **fake** per driven port, mirroring `tmx-adapters` but with no real I/O: a
+`SerialScheduler` (strictly serial, deterministic fan-out), a fixed `Clock` and `IdGenerator`
+(frozen time, seeded UUIDv7 sequence), and recording stand-ins for `ProcessRunner`, `HttpClient`,
+`ChatModel`, `FileSystem`, `ObjectStore`, `SecretResolver`, `EventSink`, and `RunStore`. The core's
+unit tests, the workspace conformance `tests/`, and downstream embedders all inject these instead of
+the built-in adapters — one shared, reusable fake set. Depends on `tmx-core` and `tmx-schema` only:
+**no `tokio`, no `reqwest`, no I/O crate**, so it stays inside the same purity boundary as the core
+it fakes (the `cargo tree` purity check covers it too).
+
+```
+tmx-testkit/src/
+├── lib.rs          # re-exports; the fake-bundle constructor
+├── scheduler.rs    # SerialScheduler (strictly serial, deterministic)
+├── clock.rs        # FixedClock (frozen, step-advanceable)
+├── idgen.rs        # SeededIdGenerator (deterministic UUIDv7 sequence)
+├── process.rs      # RecordingProcessRunner (scripted stdout/exit)
+├── http.rs         # FakeHttpClient (canned responses)
+├── chat.rs         # FakeChatModel (canned completions)
+├── fs.rs           # MemFileSystem (in-memory tree)
+├── store.rs        # MemObjectStore (in-memory blobs)
+├── sink.rs         # RecordingEventSink (asserts the event stream)
+└── …               # SecretResolver, RunStore, loader fakes as the suite needs
 ```
 
 ### `tmx-cli` — the binary and composition root
@@ -143,13 +170,15 @@ tmx-cli/src/
             │ tmx-schema │  serde · indexmap
             └────────────┘
 
-   external test crate ── SerialScheduler, fake ProcessRunner/HttpClient/ChatModel,
-                          fixed Clock/IdGenerator  ── injected into tmx-core use cases
+   tmx-testkit (the 5th crate) ── depends on tmx-core + tmx-schema only; no async runtime and
+   no I/O crate, so it stays inside the core's purity boundary. Provides SerialScheduler, fake
+   ProcessRunner/HttpClient/ChatModel, and a fixed Clock/IdGenerator — injected into tmx-core
+   use cases by unit tests, the workspace conformance `tests/`, and downstream embedders.
 ```
 
-The arrows are the only edges. `tmx-core` and `tmx-schema` have **no async runtime, no I/O crate**
-in their dependency trees — a property checked in CI (e.g. `cargo tree` assertion) so the purity
-boundary cannot rot.
+The arrows are the only edges. `tmx-core`, `tmx-schema`, and `tmx-testkit` have **no async runtime,
+no I/O crate** in their dependency trees — a property checked in CI (e.g. `cargo tree` assertion) so
+the purity boundary cannot rot.
 
 ---
 
@@ -157,11 +186,11 @@ boundary cannot rot.
 
 - The **core is sync**. `PipelineRunner`, `Interpolator`, `Masker`, `MatcherEngine`, and the merge
   are ordinary functions. Where the runner must call a side-effecting port, it calls an **async
-  driven-port trait method** and awaits it — so the runner's *orchestration* methods are `async`, but
-  the *pure* services they call are not.
+  driven-port trait method** and awaits it — so the runner's _orchestration_ methods are `async`, but
+  the _pure_ services they call are not.
 - **All concurrency is the `Scheduler` port's.** `map`/`eval` fan-out submits work to the Scheduler,
   which enforces the bound (`concurrency`, capped by the global `--concurrency`). No adapter spawns
-  its own tasks. The test build supplies a `SerialScheduler` for deterministic ordering.
+  its own tasks. `tmx-testkit` supplies a `SerialScheduler` for deterministic ordering.
 - **One tokio runtime**, constructed in the composition root with a bounded worker-thread count,
   drives all async adapters. The core never constructs a runtime.
 
@@ -203,20 +232,24 @@ denying `ProcessRunner`, an allowlist `HttpClient`, and a read-only `FileSystem`
 
 **Decisions**
 
-- *Four crates, not one.* **`tmx-schema` / `tmx-core` / `tmx-adapters` / `tmx-cli`.** Chosen so the
-  dependency rule is enforced by the compiler (the core cannot reach an adapter) and so the data
-  model and core are reusable without the binary. The cost is more `Cargo.toml` boilerplate and some
-  cross-crate trait plumbing.
-- *Adapters behind features.* **Each driven adapter is a Cargo feature.** Chosen for minimal and
+- _Four production crates, not one._ **`tmx-schema` / `tmx-core` / `tmx-adapters` / `tmx-cli`** (a
+  fifth, `tmx-testkit`, holds the fakes — see below). Chosen so the dependency rule is enforced by
+  the compiler (the core cannot reach an adapter) and so the data model and core are reusable
+  without the binary. The cost is more `Cargo.toml` boilerplate and some cross-crate trait plumbing.
+- _The fakes ship as a `tmx-testkit` crate._ **The in-memory fakes — `SerialScheduler`, a fixed
+  `Clock`/`IdGenerator`, recording `ProcessRunner`/`HttpClient`/`ChatModel`, and the in-memory I/O
+  ports — live in a fifth workspace crate, `tmx-testkit`, depending on `tmx-core` + `tmx-schema`
+  only.** Chosen so the core's unit tests, the workspace conformance suite, and downstream embedders
+  inject one shared, purity-preserving fake set rather than each re-rolling its own; the cost is
+  keeping the fakes in step with the port traits as they evolve.
+- _Adapters behind features._ **Each driven adapter is a Cargo feature.** Chosen for minimal and
   sandboxed builds; the cost is feature-combination testing in CI.
-- *Provider types in `tmx-schema`, provider adapters in `tmx-adapters`.* **The manifest is data; the
+- _Provider types in `tmx-schema`, provider adapters in `tmx-adapters`._ **The manifest is data; the
   Binary/Flow execution is an adapter.** Chosen to keep the manifest reusable by `tmx provider
-  validate` without the execution machinery.
+validate` without the execution machinery.
 
 **Open questions**
 
-- *Where do the driving-port traits for a library API live?* They are declared in
+- _Where do the driving-port traits for a library API live?_ They are declared in
   `tmx-core::ports::driving`, but a published library facade might warrant a thin `tmx` umbrella
   crate re-exporting a curated surface. Deferred until the library host is specified.
-- *Test fakes crate.* The fake adapters could live in a `tmx-testkit` dev-crate so downstream
-  embedders reuse them. Worth doing once the port traits stabilise.

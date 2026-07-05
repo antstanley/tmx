@@ -165,7 +165,7 @@ map task                                   eval task
 
 `tmx-core/src/fanout.rs` (`map` + `eval` orchestration over the `Scheduler` port), `matcher.rs` (the
 `MatcherEngine`). The `Scheduler` trait is in `tmx-core/src/ports/driven.rs`; `TokioScheduler` is in
-`tmx-adapters/src/scheduler.rs`; `SerialScheduler` is a test fake.
+`tmx-adapters/src/scheduler.rs`; `SerialScheduler` is the fake in `tmx-testkit`.
 
 ---
 

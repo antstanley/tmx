@@ -24,7 +24,7 @@ This document is the entry point. Detail pages are linked from each section.
 ## Problem
 
 The TMX data model ([`SCHEMA.md`](../SCHEMA.md)) and the design drafts ([`CLI.md`](../CLI.md),
-[`RUNTIME.md`](../RUNTIME.md)) define *what* TMX is and *how* it should behave, but they are
+[`RUNTIME.md`](../RUNTIME.md)) define _what_ TMX is and _how_ it should behave, but they are
 deliberately language-neutral and describe no concrete codebase. An implementer cannot start from
 them without first deciding: which crates, which trait boundaries, which error model, which limits,
 which allocation and concurrency discipline.
@@ -93,7 +93,7 @@ core reaches the world only through **driven ports**, each with one built-in ada
                                                                  └──▶ Scheduler       bounded concurrency
 ```
 
-- **`tmx-core`** — the pure execution model and the port *traits*. No `tokio`, no `std::fs`, no
+- **`tmx-core`** — the pure execution model and the port _traits_. No `tokio`, no `std::fs`, no
   `std::process`, no system clock. Depends on `serde_json` and the data-model types only.
 - **`tmx-schema`** — the data-model types (`Flow`, `Task`, `Context`, `Environment`, …) deserialised
   from the JSON model, plus the limits constants.
@@ -108,34 +108,34 @@ See [02-crate-architecture.md](02-crate-architecture.md) for the concrete worksp
 
 ## Detail pages
 
-| Page | Topic |
-|---|---|
-| [01-domain-model.md](01-domain-model.md) | Data model + runtime entities as Rust types; IDs; the Pipeline lifecycle |
-| [02-crate-architecture.md](02-crate-architecture.md) | Cargo workspace, crate boundaries, the dependency rule, async model, composition root |
-| [03-loading-and-preflight.md](03-loading-and-preflight.md) | SourceLoader, `kind`-dispatch, reference resolution, directory assembly, the fail-fast preflight |
-| [04-execution-engine.md](04-execution-engine.md) | The `PipelineRunner` algorithm, scopes & interpolation, secrets & masking, hooks, `produces`, the state cap, bounded `flow` recursion |
-| [05-fan-out-and-eval.md](05-fan-out-and-eval.md) | `map` bounded fan-out, `eval` measurement, the shared MatcherEngine, scorers, the Scheduler |
-| [06-ports-and-adapters.md](06-ports-and-adapters.md) | Every driven port as a trait + its built-in adapter; the TaskDispatcher; provider execution |
-| [07-cli.md](07-cli.md) | The `tmx` command surface, flags, output contract, configuration, exit codes |
-| [08-errors-and-observability.md](08-errors-and-observability.md) | Error categories → exit codes, the event stream, reporters, the run store, masking at the boundary |
-| [architecture-principles.md](architecture-principles.md) | Hexagonal layering + Tiger Style tenets + Rust conventions (cross-cutting) |
-| [development-guidelines.md](development-guidelines.md) | Tiger Style for Rust: toolchain, code style, limits meta-rule, testing, definition of done |
-| [canonical-types.schema.json](canonical-types.schema.json) | JSON Schema for the **runtime/output** types the data-model schema leaves out of scope |
+| Page                                                             | Topic                                                                                                                                 |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| [01-domain-model.md](01-domain-model.md)                         | Data model + runtime entities as Rust types; IDs; the Pipeline lifecycle                                                              |
+| [02-crate-architecture.md](02-crate-architecture.md)             | Cargo workspace, crate boundaries, the dependency rule, async model, composition root                                                 |
+| [03-loading-and-preflight.md](03-loading-and-preflight.md)       | SourceLoader, `kind`-dispatch, reference resolution, directory assembly, the fail-fast preflight                                      |
+| [04-execution-engine.md](04-execution-engine.md)                 | The `PipelineRunner` algorithm, scopes & interpolation, secrets & masking, hooks, `produces`, the state cap, bounded `flow` recursion |
+| [05-fan-out-and-eval.md](05-fan-out-and-eval.md)                 | `map` bounded fan-out, `eval` measurement, the shared MatcherEngine, scorers, the Scheduler                                           |
+| [06-ports-and-adapters.md](06-ports-and-adapters.md)             | Every driven port as a trait + its built-in adapter; the TaskDispatcher; provider execution                                           |
+| [07-cli.md](07-cli.md)                                           | The `tmx` command surface, flags, output contract, configuration, exit codes                                                          |
+| [08-errors-and-observability.md](08-errors-and-observability.md) | Error categories → exit codes, the event stream, reporters, the run store, masking at the boundary                                    |
+| [architecture-principles.md](architecture-principles.md)         | Hexagonal layering + Tiger Style tenets + Rust conventions (cross-cutting)                                                            |
+| [development-guidelines.md](development-guidelines.md)           | Tiger Style for Rust: toolchain, code style, limits meta-rule, testing, definition of done                                            |
+| [canonical-types.schema.json](canonical-types.schema.json)       | JSON Schema for the **runtime/output** types the data-model schema leaves out of scope                                                |
 
 ---
 
 ## Scope summary
 
-| Area | Implementation | Notes |
-|---|---|---|
-| Data model | All of [`tmx.schema.json`](../tmx.schema.json) 0.2.0 | 10 task types, context, environment, inputs, `produces` |
-| Source formats | YAML · JSON · JSONC · TOML | One `SourceLoader` port, one adapter per format |
-| Execution | Sequential loop + bounded `map`/`eval` fan-out | No DAG, no branching beyond `if`, no unbounded parallelism |
-| Environment providers | `binary` + `flow` adapters | Reference resolution is file-path only in v0 |
-| Reference resolution | File paths | Registered-name registry out of scope in v0 |
-| Run store | Local `./.tmx/runs/<uuidv7>/` | Record, not journal; 30-day default retention |
-| Concurrency | Bounded via `Scheduler` port | tokio at the edge; deterministic serial test adapter |
-| Allocation | Heap state under a hard, asserted size cap | Bounded, not zero — the deliberate Tiger Style deviation |
+| Area                  | Implementation                                       | Notes                                                      |
+| --------------------- | ---------------------------------------------------- | ---------------------------------------------------------- |
+| Data model            | All of [`tmx.schema.json`](../tmx.schema.json) 0.2.0 | 10 task types, context, environment, inputs, `produces`    |
+| Source formats        | YAML · JSON · JSONC · TOML                           | One `SourceLoader` port, one adapter per format            |
+| Execution             | Sequential loop + bounded `map`/`eval` fan-out       | No DAG, no branching beyond `if`, no unbounded parallelism |
+| Environment providers | `binary` + `flow` adapters                           | Reference resolution is file-path only in v0               |
+| Reference resolution  | File paths                                           | Registered-name registry out of scope in v0                |
+| Run store             | Local `./.tmx/runs/<uuidv7>/`                        | Record, not journal; 30-day default retention              |
+| Concurrency           | Bounded via `Scheduler` port                         | tokio at the edge; deterministic serial test adapter       |
+| Allocation            | Heap state under a hard, asserted size cap           | Bounded, not zero — the deliberate Tiger Style deviation   |
 
 ---
 
@@ -153,28 +153,33 @@ See [02-crate-architecture.md](02-crate-architecture.md) for the concrete worksp
 
 **Decisions**
 
-- *Spec describes intended implementation, present tense.* **The repo has no runtime; these pages
+- _Spec describes intended implementation, present tense._ **The repo has no runtime; these pages
   describe the design the Rust implementation will follow, in present tense, with this status
   banner.** This matches the existing [`CLI.md`](../CLI.md)/[`RUNTIME.md`](../RUNTIME.md) drafts,
   which do the same. A future "Implemented" status flip happens per page as code lands; divergence
   between a page and the code is then a real defect to flag, per the spec discipline.
-- *Specs are canonical; drafts are rationale.* **`docs/specs/` is the authoritative Rust + Tiger
+- _Specs are canonical; drafts are rationale._ **`docs/specs/` is the authoritative Rust + Tiger
   Style blueprint; [`CLI.md`](../CLI.md)/[`RUNTIME.md`](../RUNTIME.md)/[`SCHEMA.md`](../SCHEMA.md)
   are kept as the language-neutral design rationale (the "why").** The specs state the Rust "what"
   and link back to the drafts rather than restating their prose.
-- *Pragmatic Tiger Style.* **tokio async only at the adapter edge; a pure sync core; bounded
+- _Pragmatic Tiger Style._ **tokio async only at the adapter edge; a pure sync core; bounded
   concurrency via a `Scheduler` port; heap JSON state under a hard, asserted cap; assertions stay on
   in release builds.** Chosen over a TigerBeetle-faithful (single-threaded, fixed-capacity,
   zero-allocation) reading because TMX's identity is dynamic JSON dataflow over async I/O backends
   (`reqwest`, the S3 SDK, process spawning); the bounded-everything, explicit-limit, dense-assertion
   core of Tiger Style is kept in full. See [architecture-principles.md](architecture-principles.md).
 
-- *Library and HTTP hosts are specified after the CLI ships.* **v0 specifies only the CLI driving
+- _Library and HTTP hosts are specified after the CLI ships._ **v0 specifies only the CLI driving
   adapter; the library and HTTP-server hosts are specified once the CLI is implemented.** The use
   cases and composition root are already shaped for all three (see
   [02-crate-architecture.md](02-crate-architecture.md)), so nothing in v0 forecloses them.
 
+- _Limit values are first-pass envelopes, kept as-is for v0._ **The
+  [limits table](04-execution-engine.md#limits) defaults stand; the tunable ones (max tasks per
+  flow, max fan-out width) are adjusted once real Flows exist, not before.** Chosen because the
+  defaults only need to be generous enough to catch a runaway Flow today; tuning them against
+  hypothetical workloads would be premature, and they stay config-overridable where it matters.
+
 **Open questions**
 
-- *Concrete limit values.* The [limits table](04-execution-engine.md#limits) fixes defaults; several
-  (max tasks per flow, max fan-out width) are first-pass envelopes, tunable once real Flows exist.
+- None currently.

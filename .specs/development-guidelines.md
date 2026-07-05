@@ -221,8 +221,8 @@ The pre-push gate runs the schema validation today; as crates land it also runs 
   merge); integration tests per crate exercising the core plus in-memory adapters; end-to-end
   **golden Flows** that drive `RunFlow` with recorded adapters and assert the event stream + final
   state (marked `#[ignore]` when they need real backends).
-- **Determinism.** Inject the `Clock`, `IdGenerator`, and `SerialScheduler` fakes; no
-  `SystemTime::now()`, no randomness, no `TokioScheduler` in test bodies — this is the determinism
+- **Determinism.** Inject the `Clock`, `IdGenerator`, and `SerialScheduler` fakes from `tmx-testkit`;
+  no `SystemTime::now()`, no randomness, no `TokioScheduler` in test bodies — this is the determinism
   payoff of the hexagon ([architecture-principles.md](architecture-principles.md#25-determinism-and-testability)).
 - **Positive and negative space together.** Every validation path ships with a test for what it
   accepts *and* what it rejects (a leaked-secret test, an over-cap-state test, a too-deep-recursion
