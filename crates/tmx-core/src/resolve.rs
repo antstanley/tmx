@@ -66,7 +66,7 @@ pub fn resolve(flow: Flow) -> Result<ResolvedFlow, RunError> {
 
 /// Desugar a [`Tasks`] collection into an ordered `Vec<`[`Task`]`>`: the array form is taken as-is,
 /// the map form fills each task's `name` from its key (a string entry desugars to an `exec` task).
-fn desugar_tasks(tasks: Tasks) -> Result<Vec<Task>, RunError> {
+pub(crate) fn desugar_tasks(tasks: Tasks) -> Result<Vec<Task>, RunError> {
     match tasks {
         Tasks::List(list) => Ok(list),
         Tasks::Map(map) => Ok(map

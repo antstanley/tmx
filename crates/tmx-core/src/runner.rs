@@ -28,6 +28,7 @@ use tmx_schema::task::{FlowWith, Task};
 
 use crate::dispatch::{Dispatch, dispatch_task, interp_template, interp_value, is_truthy};
 use crate::error::RunError;
+use crate::hooks::{HookKind, HookRunner};
 use crate::interpolate::evaluate;
 use crate::mask::Masker;
 use crate::merge::{StateBuilder, normalize_output};
@@ -103,9 +104,16 @@ pub struct RunConfig {
 }
 
 /// The bounded sequential task loop.
+///
+/// `in_hook` records whether this runner is executing a lifecycle-hook body. A hook body runs through
+/// the same runner one level deep ([04 §Lifecycle hooks](../../../.specs/04-execution-engine.md)), but
+/// **never fires lifecycle hooks of its own** — so a runner with `in_hook == true` walks its tasks
+/// without firing `create`/`change`/`destroy`/`error`. This is the structural half of the
+/// no-hook-inside-a-hook guarantee; [`HookRunner::fire`] carries the asserted backstop.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PipelineRunner {
     config: RunConfig,
+    in_hook: bool,
 }
 
 /// The terminal result of a [`PipelineRunner::run`]: the [`Pipeline`] plus the names of the tasks
@@ -125,10 +133,10 @@ pub struct RunOutcome {
 /// The internal result of running a task list: the terminal [`Pipeline`], the abort failure (when the
 /// run stopped on a non-`continueOnError` task), and the names of the tasks that changed the state
 /// (the `change`-hook trigger signal Task 12 consumes — this unit exposes it, it does not fire hooks).
-struct Outcome {
-    pipeline: Pipeline,
-    failure: Option<RunError>,
-    changed: Vec<String>,
+pub(crate) struct Outcome {
+    pub(crate) pipeline: Pipeline,
+    pub(crate) failure: Option<RunError>,
+    pub(crate) changed: Vec<String>,
 }
 
 /// What one task step produced: it was skipped by its `if` gate, or it produced a normalised output.
@@ -142,7 +150,20 @@ impl PipelineRunner {
     /// default state cap).
     #[must_use]
     pub fn new(config: RunConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            in_hook: false,
+        }
+    }
+
+    /// A runner that executes a lifecycle-hook body one level deep: same engine flags, but it walks
+    /// its tasks without firing any lifecycle hook of its own (the no-hook-inside-a-hook guarantee).
+    #[must_use]
+    pub(crate) fn for_hook_body(config: RunConfig) -> Self {
+        Self {
+            config,
+            in_hook: true,
+        }
     }
 
     /// Run `flow` end to end: emit `run.start`, walk the tasks, emit `run.finish`, and return the
@@ -182,8 +203,35 @@ impl PipelineRunner {
         )
         .await?;
 
+        // The hook runner reads this Flow's `context.hooks`; it is a no-op when no hook is declared or
+        // when this runner is itself a hook body (`in_hook`), so a hook-free flow runs exactly as
+        // before hooks existed.
+        let hooks = HookRunner::new(flow.context.as_ref(), self.config, self.in_hook);
+
+        // `create` fires once on entry to `running`, right after `run.start`.
+        hooks
+            .fire(
+                HookKind::Create,
+                id,
+                inputs,
+                ports,
+                masker,
+                resolved_secrets,
+                depth,
+            )
+            .await?;
+
         let outcome = self
-            .run_tasks(id, flow, inputs, ports, masker, resolved_secrets, depth)
+            .run_tasks(
+                id,
+                flow,
+                inputs,
+                ports,
+                masker,
+                resolved_secrets,
+                depth,
+                Some(&hooks),
+            )
             .await?;
 
         let status = if outcome.failure.is_some() {
@@ -191,6 +239,36 @@ impl PipelineRunner {
         } else {
             RunStatus::Ok
         };
+
+        // `error` fires when a task aborted the Pipeline (a real failure, not a `continueOnError`
+        // record); it precedes `destroy`, which is the lifecycle's `finally`.
+        if outcome.failure.is_some() {
+            hooks
+                .fire(
+                    HookKind::Error,
+                    id,
+                    inputs,
+                    ports,
+                    masker,
+                    resolved_secrets,
+                    depth,
+                )
+                .await?;
+        }
+        // `destroy` fires on every terminal status — success, failure, or cancellation — like a
+        // `finally`. It is status-independent: the run reaches this point exactly once, terminally.
+        hooks
+            .fire(
+                HookKind::Destroy,
+                id,
+                inputs,
+                ports,
+                masker,
+                resolved_secrets,
+                depth,
+            )
+            .await?;
+
         let total = Milliseconds(ports.clock.now_ms().0.saturating_sub(start_ms.0));
         emit_event(
             ports,
@@ -221,8 +299,12 @@ impl PipelineRunner {
     /// (`run_tasks` → step → sub-flow → `run_tasks`) has a type-erased indirection and stays a finite
     /// size, satisfying Tiger Style's no-unbounded-recursion rule together with the `FLOW_DEPTH_MAX`
     /// guard.
+    ///
+    /// `hooks` is `Some` only for the Pipeline's own top-level task loop, where a state-changing task
+    /// fires the `change` hook; it is `None` for a sub-flow's loop and for a hook body, so `change`
+    /// fires once per state-changing task of the Pipeline and never per sub-flow or per hook task.
     #[allow(clippy::too_many_arguments)] // mirrors `run`'s collaborators; threaded through the recursion
-    fn run_tasks<'a>(
+    pub(crate) fn run_tasks<'a>(
         &'a self,
         id: &'a RunId,
         flow: &'a ResolvedFlow,
@@ -231,6 +313,7 @@ impl PipelineRunner {
         masker: &'a mut Masker,
         resolved_secrets: &'a mut Vec<String>,
         depth: u32,
+        hooks: Option<&'a HookRunner<'a>>,
     ) -> Pin<Box<dyn Future<Output = Result<Outcome, RunError>> + Send + 'a>> {
         Box::pin(async move {
             let count = flow.tasks.len();
@@ -314,7 +397,11 @@ impl PipelineRunner {
                             .cloned();
                         match builder.merge(&key, output.clone(), name) {
                             Ok(()) => {
-                                if previous.as_ref() != Some(&output) {
+                                // `change` fires once per state-changing task, and only when the merge
+                                // actually changed the state — a task whose merge is a no-op does not
+                                // fire it (04 §Lifecycle hooks).
+                                let did_change = previous.as_ref() != Some(&output);
+                                if did_change {
                                     changed.push(name.to_string());
                                 }
                                 emit_event(
@@ -337,6 +424,21 @@ impl PipelineRunner {
                                     started_at,
                                     ms: elapsed,
                                 });
+                                // Fire `change` after the task's own `task.finish`, so a reader can
+                                // attribute the hook to its triggering task.
+                                if did_change && let Some(hooks) = hooks {
+                                    hooks
+                                        .fire(
+                                            HookKind::Change,
+                                            id,
+                                            inputs,
+                                            ports,
+                                            masker,
+                                            resolved_secrets,
+                                            depth,
+                                        )
+                                        .await?;
+                                }
                             }
                             Err(merge_err) => {
                                 // A cap/depth overflow at merge aborts the run regardless of the
@@ -520,6 +622,8 @@ impl PipelineRunner {
             Some(value) => interp_value(value, scope)?,
         };
         let merged = merged_inputs(&sub_inputs, &sub_flow.inputs);
+        // A sub-flow's loop does not fire the Pipeline's `change` hook per inner task: `change` is a
+        // property of the Pipeline's own task loop, so `hooks` is `None` here.
         let outcome = self
             .run_tasks(
                 id,
@@ -529,6 +633,7 @@ impl PipelineRunner {
                 masker,
                 resolved_secrets,
                 depth + 1,
+                None,
             )
             .await?;
         if let Some(failure) = outcome.failure {
@@ -654,7 +759,7 @@ impl PipelineRunner {
 
 /// Emit one event through the sink, redacting its payload and asserting the Masker registry holds
 /// every resolved secret first — the *registry-populated* half of the boundary guarantee.
-async fn emit_event(
+pub(crate) async fn emit_event(
     ports: Ports<'_>,
     masker: &Masker,
     resolved_secrets: &[String],

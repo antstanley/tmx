@@ -23,6 +23,7 @@
 
 pub mod dispatch;
 pub mod error;
+pub mod hooks;
 pub mod interpolate;
 pub mod mask;
 pub mod matcher;
@@ -34,6 +35,7 @@ pub mod runner;
 pub mod usecases;
 
 pub use error::{ErrorCategory, RunError};
+pub use hooks::{HookKind, HookRunner};
 pub use interpolate::evaluate;
 pub use mask::{Masked, Masker};
 pub use matcher::MatcherEngine;
