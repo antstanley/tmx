@@ -23,12 +23,14 @@
 
 pub mod error;
 pub mod interpolate;
+pub mod mask;
 pub mod matcher;
 pub mod model;
 pub mod ports;
 
 pub use error::{ErrorCategory, RunError};
 pub use interpolate::evaluate;
+pub use mask::{Masked, Masker};
 pub use matcher::MatcherEngine;
 pub use model::{
     BlobWrapper, Diagnostic, EvalCase, EvalSummary, Event, MessageWrapper, Milliseconds, Pipeline,
