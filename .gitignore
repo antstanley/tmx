@@ -4,3 +4,7 @@
 # Python caches
 __pycache__/
 *.pyc
+
+# Rust build artifacts
+/target
+**/target/
