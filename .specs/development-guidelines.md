@@ -24,7 +24,7 @@ constant**, **assert invariants in release**, **keep the core pure**, **leave ze
 
 | Tool | Version / channel | Notes |
 |---|---|---|
-| Rust | stable, pinned | pinned in `rust-toolchain.toml`; MSRV declared and tested |
+| Rust | stable, pinned; **MSRV 1.96.1** | pinned in `rust-toolchain.toml`; MSRV 1.96.1 declared in the workspace `Cargo.toml` (`rust-version`) and tested in CI |
 | Edition | 2024 | workspace-wide |
 | rustfmt | default channel | `max_width = 100`; runs in CI and pre-push |
 | clippy | latest | `--all-targets --all-features -D warnings`; `clippy.toml` opt-outs each carry a comment |
@@ -326,6 +326,11 @@ A change is done when:
   suite plus the negative-space test rules are the correctness net.** Chosen because a percentage
   gate invites gaming and measures lines, not properties; revisit only if regressions slip
   through.
+- *MSRV pinned at 1.96.1.* **The minimum supported Rust version is 1.96.1, declared via `rust-version`
+  in the workspace `Cargo.toml`, pinned in `rust-toolchain.toml`, and verified in CI.** Raising the
+  MSRV is a deliberate, `CHANGELOG.md`-noted change, not an automatic follow of stable. Chosen as a
+  recent stable that comfortably clears the edition 2024 floor (Rust 1.85), giving the current language
+  and `std` surface while keeping one explicit floor every crate builds against.
 
 **Open questions**
 
@@ -334,5 +339,3 @@ A change is done when:
   pre-push gates are the *intended* setup; they become body-true (and the
   [`scripts/validate.sh`](../../scripts/validate.sh) gate extends to call them) as the first crate
   lands. Until then they are the plan, recorded here.
-- *MSRV policy.* The minimum supported Rust version and how aggressively it tracks stable is undecided;
-  pin it when the first crate is created.
