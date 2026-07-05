@@ -1,0 +1,95 @@
+# Done Certificate — Task 12: Lifecycle hooks (one level deep)
+
+**Task:** [12-lifecycle_hooks.md](12-lifecycle_hooks.md) · **Plan:** [plan.md](../plan.md)
+**State:** Authored 2026-07-05 — unverified
+
+> This certificate is a verification protocol for Task 12. A validating agent discharges it:
+> for each obligation, collect the named evidence, run the named checks, set the Status, then
+> derive the Conclusion by the rubric below. Do not mark an obligation SATISFIED without its
+> evidence; do not record DONE with any non-SATISFIED obligation.
+
+## Definition
+
+DONE(Task 12) ≡ every obligation O1…O4 below holds, each backed by the evidence the obligation
+names (a file location, a test result, or an execution trace) — not by assertion. O4 is the
+Reviewable item; record DONE only when O1…O4 are all SATISFIED.
+
+## Premises
+
+- **P1 — Goal.** Produce the `HookRunner` firing `create`/`change`/`destroy`/`error` through the same
+  runner, one level deep, with the no-hook-inside-a-hook guarantee asserted.
+- **P2 — Obligations.** Done iff O1…O4 all hold; O4 is the Reviewable item.
+- **P3 — Invariants.** This task extends the Task 11 `PipelineRunner::run` loop and finish path. The
+  Task 11 runner integration test must keep passing: a hook-free flow runs exactly as before, and the
+  four composed pure services (07/08/09/10) are unaffected. Hooks add firing points; they do not
+  change the base loop's task semantics.
+
+## Obligations
+
+- **O1 — `create`/`change`/`destroy`/`error` fire at exactly the specified transitions over the fakes, `change` fires once per state-changing task and not on a skip, and `destroy` fires on success, failure, and cancellation.**
+  - *Claim:* `create` fires once on entry to `running`; `change` fires once per state-changing task
+    and only when the merge actually changed the state (a skipped `if=false` task does not fire it);
+    `error` fires when a task aborts the Pipeline; and `destroy` fires on every terminal status —
+    success, failure, and cancellation — like a `finally`.
+  - *Evidence to collect:* read `crates/tmx-core/src/hooks.rs` and the hook integration points in
+    `crates/tmx-core/src/runner.rs`; run `cargo nextest run -p tmx-core hooks` and confirm tests that
+    each hook fires at its transition over the fakes, that `change` fires once per state-changing task
+    and not on a skip, and that `destroy` fires on the success, failure, and cancellation terminal
+    paths.
+  - *Checks:* trace a skipped task (`if=false`, no merge) and confirm the `change` fire-path is not
+    reached; trace a state-changing task and confirm `change` fires exactly once after its merge, not
+    per-iteration.
+  - *Status:* ☐ unverified
+
+- **O2 — A hook whose body would fire another lifecycle hook trips the one-level assertion, and an over-`HOOK_TASKS_MAX` hook body is rejected.**
+  - *Claim:* when already inside a hook, the runner refuses to fire a lifecycle hook — asserted — so a
+    `change` hook that mutates state does not re-trigger `change` (no hook-storm, negative space); and
+    a hook body with more than `HOOK_TASKS_MAX` tasks is rejected.
+  - *Evidence to collect:* run `cargo nextest run -p tmx-core hooks` and confirm the nested-hook test
+    (a hook body that would fire another lifecycle hook) trips the one-level assertion, and the
+    over-`HOOK_TASKS_MAX` hook-body test is rejected with the typed error.
+  - *Checks:* trace a `change` hook body that mutates state and confirm the in-hook guard asserts (or
+    the "inside a hook" flag suppresses firing) before a second lifecycle hook can fire, so recursion
+    into a hook-within-a-hook is impossible.
+  - *Status:* ☐ unverified
+
+- **O3 — Meets the repo definition of done.**
+  - *Claim:* tests pass, clippy and rustfmt clean, every new bound is a named units-last constant.
+  - *Evidence to collect:* run `cargo nextest run`, `cargo clippy --all-targets --all-features -D
+    warnings`, and `cargo fmt --all --check` — expect all clean; confirm the hook-body bound is the
+    named `tmx-schema::limits` constant `HOOK_TASKS_MAX`, not a magic number; run the `cargo tree`
+    purity check (e.g. `cargo tree -p tmx-core -i tokio` expecting no match) confirming `tmx-core`
+    stays free of an async-runtime/I/O edge.
+  - *Status:* ☐ unverified
+
+- **O4 — Reviewable: run a flow with all four hooks over the fakes and confirm the `hook.start`/`hook.finish` sequence and the single `change` per state-changing task (Reviewable).**
+  - *Claim:* a reviewer can run a flow exercising all four hooks over the fakes and observe the
+    `hook.start`/`hook.finish` event sequence and a single `change` per state-changing task.
+  - *Evidence to collect:* run `cargo nextest run -p tmx-core hooks` and read the summary; confirm the
+    all-four-hooks test asserts the ordered `hook.start`/`hook.finish` sequence and exactly one
+    `change` per state-changing task, with zero failures.
+  - *Status:* ☐ unverified
+
+## Regression check
+
+- This task extends the Task 11 runner run-path (`PipelineRunner::run` loop and finish). Re-run the
+  Task 11 integration suite (`cargo nextest run -p tmx-core runner`) and confirm a hook-free flow
+  still emits the same event stream and returns the same masked final state as before hooks existed —
+  the hook firing points must be no-ops when no hook is declared.
+
+## Residue
+
+- The `destroy`-on-cancellation case needs a cancellation signal; full cancellation is Task 29, so
+  confirm the fake path used here to reach the cancelled terminal status is representative, not a
+  stubbed-out branch.
+- Confirm `error` then `destroy` ordering on an aborting task (error hook fires, then destroy as the
+  `finally`), and that a failed hook body itself does not mask the original terminal status.
+- Confirm `hook.start`/`hook.finish` nest correctly relative to the surrounding `run`/`task` events,
+  so a reader can attribute each hook event to its triggering transition.
+
+## Conclusion
+
+<!-- Validator derives this from the obligation statuses and the regression check, per the rubric. -->
+VERDICT: ☐ (DONE | PARTIAL | NOT_DONE)
+CONFIDENCE: ☐ (high | medium | low)
+SUMMARY: ☐
