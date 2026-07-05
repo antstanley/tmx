@@ -25,6 +25,7 @@ pub mod error;
 pub mod interpolate;
 pub mod mask;
 pub mod matcher;
+pub mod merge;
 pub mod model;
 pub mod ports;
 
@@ -32,6 +33,7 @@ pub use error::{ErrorCategory, RunError};
 pub use interpolate::evaluate;
 pub use mask::{Masked, Masker};
 pub use matcher::MatcherEngine;
+pub use merge::{AdapterOutput, StateBuilder, normalize_output};
 pub use model::{
     BlobWrapper, Diagnostic, EvalCase, EvalSummary, Event, MessageWrapper, Milliseconds, Pipeline,
     PipelineState, ResolvedFlow, RunId, RunRecord, RunStatus, Scope, Scorecard, Severity,
