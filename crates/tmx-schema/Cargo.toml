@@ -7,8 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
-# No dependencies yet: the deserialise types (serde/serde_json/indexmap) land with tasks 02–03.
-# This crate is the bottom of the graph and depends on nothing outward.
+# Task 02 adds `serde` for the `MatcherName` derive; `serde_json` (dev-only) drives the matcher
+# round-trip test. `serde_json`/`indexmap` become normal deps with the deserialise types in task 03.
+# This crate is the bottom of the graph and depends on nothing outward — all pure data, no I/O.
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

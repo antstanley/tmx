@@ -8,4 +8,11 @@
 //! sits at the bottom of the workspace dependency graph.
 //!
 //! Ports: none. This crate declares no port; it is the shared vocabulary that `tmx-core` and the
-//! adapters both speak. The types and limits themselves arrive in the schema tasks (02–03).
+//! adapters both speak. Task 02 lands the [`limits`] module (every named units-last limit constant)
+//! and the closed [`MatcherName`] vocabulary; the deserialise-only Flow/Task/Context types follow
+//! in task 03.
+
+pub mod limits;
+pub mod matcher;
+
+pub use matcher::MatcherName;
