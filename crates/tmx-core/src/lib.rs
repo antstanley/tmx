@@ -13,3 +13,17 @@
 //! driven-port methods are async, and every side effect crosses a port. Depends on `tmx-schema`
 //! only — a property the `cargo tree` purity check enforces. The model, errors, ports, and
 //! services arrive in tasks 04 onward.
+//!
+//! Task 04 landed the runtime [`model`] (the entities the engine produces, serialising to the
+//! `canonical-types.schema.json` sidecar) and the typed [`error`] model ([`RunError`] /
+//! [`ErrorCategory`]).
+
+pub mod error;
+pub mod model;
+
+pub use error::{ErrorCategory, RunError};
+pub use model::{
+    BlobWrapper, Diagnostic, EvalCase, EvalSummary, Event, MessageWrapper, Milliseconds, Pipeline,
+    PipelineState, ResolvedFlow, RunId, RunRecord, RunStatus, Scope, Scorecard, Severity,
+    TaskResult, TaskStatus, Timestamp,
+};

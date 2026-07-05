@@ -8,9 +8,24 @@ license.workspace = true
 authors.workspace = true
 
 # Depends on tmx-schema only. NO async runtime and NO I/O crate may ever be added here — that is
-# the purity boundary scripts/purity.sh guards. serde_json / thiserror arrive with task 04.
+# the purity boundary scripts/purity.sh guards. serde/serde_json/indexmap/thiserror arrived with
+# task 04: the runtime model serialises (serde/serde_json), keeps order-preserving maps (indexmap,
+# e.g. EvalCase scores), and returns typed errors (thiserror, never anyhow). All four are pure data
+# crates — no I/O, no async edge — so the core stays at its side of the purity boundary.
 [dependencies]
 tmx-schema = { path = "../tmx-schema" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+thiserror = { workspace = true }
+
+# DEV-ONLY. `jsonschema` validates task 04's serialised runtime values against the
+# canonical-types.schema.json sidecar in-process (the serialize-and-validate test); it is a
+# dev-dependency, so it is invisible to the `cargo tree --edges normal` purity gate and never an
+# inward edge on the core. default-features off drops its optional remote-`$ref` resolvers (reqwest),
+# which the fully-local sidecar schema does not need.
+[dev-dependencies]
+jsonschema = { version = "0.46", default-features = false }
 
 [lints]
 workspace = true
