@@ -803,6 +803,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tmx-schema",
+ "tmx-testkit",
 ]
 
 [[package]]

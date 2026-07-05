@@ -35,6 +35,11 @@ async-trait = "0.1"
 # which the fully-local sidecar schema does not need.
 [dev-dependencies]
 jsonschema = { version = "0.46", default-features = false }
+# DEV-ONLY. The Task-06 in-memory fake port bundle, injected into the runner's integration test so the
+# sequential loop runs over deterministic fakes (fixed clock/ids, recording sink/process) exactly as
+# the composition root would inject real adapters. It is a dev-dependency, so it never appears on the
+# `cargo tree --edges normal` purity gate — the cycle (tmx-testkit → tmx-core) stays dev-only.
+tmx-testkit = { path = "../tmx-testkit" }
 
 [lints]
 workspace = true

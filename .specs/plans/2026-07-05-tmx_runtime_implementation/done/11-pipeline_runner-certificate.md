@@ -1,7 +1,7 @@
 # Done Certificate — Task 11: PipelineRunner (the sequential task loop)
 
 **Task:** [11-pipeline_runner.md](11-pipeline_runner.md) · **Plan:** [plan.md](../plan.md)
-**State:** Authored 2026-07-05 — unverified
+**State:** Validated 2026-07-05
 
 > This certificate is a verification protocol for Task 11. A validating agent discharges it:
 > for each obligation, collect the named evidence, run the named checks, set the Status, then
@@ -40,7 +40,14 @@ Reviewable item; record DONE only when O1…O4 are all SATISFIED.
   - *Checks:* resolve the dispatch of an `assert` task to the pure `MatcherEngine` call, not a driven
     port; resolve a fake `exec` task to the `ProcessRunner` port; confirm both are reached from the
     single `TaskDispatcher` seam.
-  - *Status:* ☐ unverified
+  - *Status:* ☑ SATISFIED — `cargo nextest run -p tmx-core runner` → 8/8 pass. Traced
+    `runner_runs_multi_task_flow_emits_ordered_stream_and_masked_state`: `exec` (`b"built-ok"` →
+    `{"message":"built-ok"}`) then `assert` reading `${{ tasks.build.message }}`; emitted tags are
+    exactly `run.start, task.start, task.finish, task.start, task.finish, run.finish`; final state
+    golden `{"build":{"message":"built-ok"},"check":{"passed":true,"assertions":1}}`. `assert` routes
+    to the pure `MatcherEngine` (dispatch.rs `TaskWith::Assert → run_assert`, no port); `exec` routes
+    to `ports.process.run` — both from the single `dispatch_task` seam. Abort branch stops the loop (1
+    result, Failed); continue branch records the error and runs the next task (2 results, Ok).
 
 - **O2 — The load-bearing invariants assert, and a too-deep `flow` nest returns `flow_depth_exceeded`.**
   - *Claim:* the runner asserts unique task names, in-range task index, object-typed state, `depth <=
@@ -57,7 +64,19 @@ Reviewable item; record DONE only when O1…O4 are all SATISFIED.
     `PipelineRunner::run`; trace the secret-resolution path and confirm a name absent from
     `task.secrets` is never resolved and every resolved secret is registered with the Masker before
     dispatch.
-  - *Status:* ☐ unverified
+  - *Status:* ☑ SATISFIED — Invariants asserted in release (`assert!`, not `debug_assert!`): unique
+    names (`validate_task_names` + `assert_eq!` backstop), in-range index (`assert!(index < count)`),
+    object state (`assert!(builder.as_value().is_object())` each iteration), non-empty merge key,
+    depth backstop (`assert!(depth < FLOW_DEPTH_MAX)` ≡ spec `depth + 1 <= FLOW_DEPTH_MAX`), and
+    Masker-populated-before-emit (`emit_event → masker.assert_ready`, a real release `assert!` with
+    its own trip tests in mask.rs). Negative space:
+    `runner_flow_task_past_the_depth_bound_yields_flow_depth_exceeded` starts at depth 8, the
+    dispatch guard `depth >= FLOW_DEPTH_MAX` returns `flow_depth_exceeded` (category Resolution)
+    BEFORE any load (reference resolver never consulted; tags `run.start,task.start,task.error,
+    run.finish`); `runner_rejects_missing_and_duplicate_task_names` covers the pre-flight name errors.
+    Dispatch match is exhaustive over the closed `TaskWith` enum with no `_` wildcard. `resolve_secrets`
+    iterates only `task.secrets`; an unrequested name is never touched, and each resolved value is
+    `masker.register`ed before dispatch.
 
 - **O3 — Meets the repo definition of done.**
   - *Claim:* tests pass, clippy and rustfmt clean, every new bound is a named units-last constant.
@@ -67,7 +86,13 @@ Reviewable item; record DONE only when O1…O4 are all SATISFIED.
     magic numbers; run the `cargo tree` purity check (e.g. `cargo tree -p tmx-core -i tokio`
     expecting no match) confirming `tmx-core` stays free of an async-runtime/I/O edge even though the
     runner is `async`.
-  - *Status:* ☐ unverified
+  - *Status:* ☑ SATISFIED — `cargo fmt --all --check` exit 0; `cargo clippy --all-targets
+    --all-features -D warnings` exit 0; `cargo nextest run` → 108/108 pass, 0 skipped. Loop bound is
+    `TASKS_PER_FLOW_MAX` and recursion bound is `FLOW_DEPTH_MAX`, both `tmx-schema::limits` constants;
+    state cap via `STATE_SIZE_MAX_BYTES` in `StateBuilder` — no magic numbers (local
+    `MILLISECONDS_PER_*` are units-last conversion factors, not engine dimensions). Purity: `cargo
+    tree -p tmx-core -i tokio` / `-i reqwest` → no match; `scripts/purity.sh` green (tmx-testkit is a
+    dev-only edge, off the normal-edges gate).
 
 - **O4 — Reviewable: run the runner integration test over the fakes and confirm the recorded event stream and masked final state match the expected golden values (Reviewable).**
   - *Claim:* a reviewer can run the runner integration test over the fakes and observe the recorded
@@ -75,7 +100,11 @@ Reviewable item; record DONE only when O1…O4 are all SATISFIED.
   - *Evidence to collect:* run `cargo nextest run -p tmx-core runner` and read the summary; confirm
     the integration test asserts both the ordered event stream and the masked final state against
     golden values (fixed `Clock`/`IdGenerator` fakes make this deterministic) with zero failures.
-  - *Status:* ☐ unverified
+  - *Status:* ☑ SATISFIED — `cargo nextest run -p tmx-core runner` → 8 passed, 0 failed. The
+    integration test asserts BOTH the ordered event-stream tags and the masked final-state golden
+    JSON (`FixedClock` + `SeededIdGenerator` make it deterministic); the secret-masking test
+    independently confirms redaction on both the emitted `task.finish` payload and the returned final
+    state (two boundaries).
 
 ## Regression check
 
@@ -99,6 +128,18 @@ Reviewable item; record DONE only when O1…O4 are all SATISFIED.
 ## Conclusion
 
 <!-- Validator derives this from the obligation statuses and the regression check, per the rubric. -->
-VERDICT: ☐ (DONE | PARTIAL | NOT_DONE)
-CONFIDENCE: ☐ (high | medium | low)
-SUMMARY: ☐
+VERDICT: DONE
+CONFIDENCE: high
+SUMMARY: O1–O4 all SATISFIED. `PipelineRunner::run` is a `TASKS_PER_FLOW_MAX`-bounded sequential
+loop that gates on `if`, resolves per-section context and only-requested secrets (masker-registered
+before dispatch), interpolates `with`, dispatches through the single exhaustive `TaskDispatcher`
+seam (`assert` inline via `MatcherEngine`, six side-effecting types to their ports, `flow`
+depth-guarded to a typed `flow_depth_exceeded` before recursion), normalises, merges under
+`output ?? name`, and applies the `continueOnError`-vs-abort policy — emitting the canonical
+`run.start`/`task.*`/`run.finish` stream, all payloads and the final state redacted by the run
+Masker. Load-bearing invariants are release `assert!`s; negative-space (depth ceiling, missing/
+duplicate names) is covered by passing tests. Gates independently reproduced green: fmt (0), clippy
+`-D warnings` (0), nextest 108/108, runner reviewable 8/8, purity green (no tokio/reqwest edge).
+Regression suites interpolate/matcher/mask/merge (56) pass unchanged. The two implementer clippy
+fixes (`depth < FLOW_DEPTH_MAX` backstop; panic-closure test helper) are semantically equivalent and
+introduce no behavioural change.

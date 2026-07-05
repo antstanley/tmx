@@ -21,6 +21,7 @@
 //! pure/async boundary fixed at the trait layer: a driven method is async only where it effects the
 //! outside world. Adapter and use-case *bodies* arrive in later tasks.
 
+pub mod dispatch;
 pub mod error;
 pub mod interpolate;
 pub mod mask;
@@ -28,6 +29,9 @@ pub mod matcher;
 pub mod merge;
 pub mod model;
 pub mod ports;
+pub mod resolve;
+pub mod runner;
+pub mod usecases;
 
 pub use error::{ErrorCategory, RunError};
 pub use interpolate::evaluate;
@@ -39,3 +43,6 @@ pub use model::{
     PipelineState, ResolvedFlow, RunId, RunRecord, RunStatus, Scope, Scorecard, Severity,
     TaskResult, TaskStatus, Timestamp,
 };
+pub use resolve::{merged_inputs, resolve_flow};
+pub use runner::{PipelineRunner, Ports, ProducesCheck, RunConfig, RunOutcome};
+pub use usecases::EngineRunFlow;
