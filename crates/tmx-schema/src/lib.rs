@@ -8,11 +8,24 @@
 //! sits at the bottom of the workspace dependency graph.
 //!
 //! Ports: none. This crate declares no port; it is the shared vocabulary that `tmx-core` and the
-//! adapters both speak. Task 02 lands the [`limits`] module (every named units-last limit constant)
-//! and the closed [`MatcherName`] vocabulary; the deserialise-only Flow/Task/Context types follow
-//! in task 03.
+//! adapters both speak. Task 02 landed the [`limits`] module (every named units-last limit
+//! constant) and the closed [`MatcherName`] vocabulary; task 03 adds the deserialise-only
+//! Flow/Task/Context/Environment types — a 1:1 mirror of every `$def` in the frozen
+//! `tmx.schema.json` input contract, so the whole example corpus loads into typed values with
+//! source order preserved.
 
+pub mod context;
+pub mod environment;
+pub mod flow;
 pub mod limits;
 pub mod matcher;
+pub mod task;
 
+pub use context::{Context, EnvMap, Hook, HookUse, Hooks, SecretSource, SecretValue};
+pub use environment::{Environment, Resources};
+pub use flow::{ContextRef, EnvironmentRef, Flow, InputSpec, TaskEntry, Tasks};
 pub use matcher::MatcherName;
+pub use task::{
+    AssertWith, Assertion, ChatCompletionWith, ChatMessage, Duration, EvalThreshold, EvalWith,
+    ExecWith, FetchWith, FileWith, FlowWith, MapWith, RunWith, Scorer, StoreWith, Task, TaskWith,
+};

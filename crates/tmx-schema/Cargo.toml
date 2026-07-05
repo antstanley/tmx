@@ -7,14 +7,22 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 
-# Task 02 adds `serde` for the `MatcherName` derive; `serde_json` (dev-only) drives the matcher
-# round-trip test. `serde_json`/`indexmap` become normal deps with the deserialise types in task 03.
-# This crate is the bottom of the graph and depends on nothing outward — all pure data, no I/O.
+# Task 02 added `serde` for the `MatcherName` derive. Task 03 promotes `serde_json` and `indexmap`
+# to normal deps: the deserialise-only Flow/Task model uses `serde_json::Value` for the schema's
+# "any JSON type" leaves (`produces`, `default`, `expected`, …) and `indexmap::IndexMap` for the
+# map-form task list and every other order-preserving object, so source key order is a type
+# property. All three are pure data crates — no I/O, no async — so the crate stays at the bottom of
+# the graph. The YAML/TOML parsers are DEV-ONLY: the real cross-format loader is the `SourceLoader`
+# adapter (task 13); here they exist solely to round-trip the example corpus through these types.
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+serde_yaml_ng = "0.10"
+toml = "0.8"
 
 [lints]
 workspace = true
