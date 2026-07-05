@@ -19,6 +19,15 @@ serde_json = { workspace = true }
 indexmap = { workspace = true }
 thiserror = { workspace = true }
 
+# TRAIT-SUPPORT ONLY (02-crate-architecture.md §tmx-core: "trait-support crates only"). `async-trait`
+# arrived with task 05 (the driven port traits): a driven port injected as `dyn Port` at the
+# composition root needs an object-safe async method, which native `async fn` in traits is not. The
+# macro rewrites each `async fn` to a `Pin<Box<dyn Future + Send>>`-returning method, restoring
+# object safety. It is a compile-time proc-macro with no runtime and NO async-runtime/I/O edge —
+# it pulls in `tokio`/`reqwest`/an S3 SDK for nothing — so it stays on the pure side of the boundary
+# scripts/purity.sh guards (which forbids exactly those runtime/I/O crates, not trait-support macros).
+async-trait = "0.1"
+
 # DEV-ONLY. `jsonschema` validates task 04's serialised runtime values against the
 # canonical-types.schema.json sidecar in-process (the serialize-and-validate test); it is a
 # dev-dependency, so it is invisible to the `cargo tree --edges normal` purity gate and never an

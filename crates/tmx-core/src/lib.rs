@@ -16,10 +16,14 @@
 //!
 //! Task 04 landed the runtime [`model`] (the entities the engine produces, serialising to the
 //! `canonical-types.schema.json` sidecar) and the typed [`error`] model ([`RunError`] /
-//! [`ErrorCategory`]).
+//! [`ErrorCategory`]). Task 05 landed the [`ports`] — the driven port traits (every capability the
+//! core needs from the outside) and the driving use-case traits (one per CLI command) — with the
+//! pure/async boundary fixed at the trait layer: a driven method is async only where it effects the
+//! outside world. Adapter and use-case *bodies* arrive in later tasks.
 
 pub mod error;
 pub mod model;
+pub mod ports;
 
 pub use error::{ErrorCategory, RunError};
 pub use model::{
