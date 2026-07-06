@@ -23,6 +23,7 @@
 
 pub mod dispatch;
 pub mod error;
+pub mod fanout;
 pub mod hooks;
 pub mod interpolate;
 pub mod mask;
@@ -36,6 +37,7 @@ pub mod runner;
 pub mod usecases;
 
 pub use error::{ErrorCategory, RunError};
+pub use fanout::run_map;
 pub use hooks::{HookKind, HookRunner};
 pub use interpolate::evaluate;
 pub use mask::{Masked, Masker};

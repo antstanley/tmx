@@ -45,21 +45,33 @@ uuid = { version = "1", features = ["v7"] }
 # `--no-default-features` yields a build with no async runtime at all. Feature set is the minimum the
 # adapter needs: `process` (spawn + piped stdio), `io-util` (capped pipe reads / stdin writes),
 # `time` (the per-task timeout), `rt` + `rt-multi-thread` + `macros` (the runtime and `#[tokio::test]`).
+# `sync` adds `tokio::sync::Semaphore`, the bound behind the concurrent `TokioScheduler` (task 18).
 tokio = { version = "1", optional = true, features = [
     "process",
     "io-util",
     "time",
+    "sync",
     "rt",
     "rt-multi-thread",
     "macros",
 ] }
 
+# The concurrent `TokioScheduler` (task 18) drives up to `concurrency` bounded, non-`'static` element
+# futures at once and collects them in index order. `futures-util`'s `join_all` is the order-preserving
+# concurrent driver; combined with a `tokio::sync::Semaphore` it bounds in-flight work without
+# spawning (the element futures borrow the caller's scope, so they are not `'static`). `alloc` is the
+# only feature `join_all` needs — no executor, no I/O edge of its own.
+futures-util = { version = "0.3", optional = true, default-features = false, features = [
+    "alloc",
+] }
+
 # `process` gates the OS-process adapter and its `tokio` edge; it is on by default so the standard
 # `cargo nextest run` exercises the real-process adapter tests (they are never silently skipped),
-# while `--no-default-features` drops tokio for a minimal build.
+# while `--no-default-features` drops tokio for a minimal build. It also gates the concurrent
+# `TokioScheduler`, which shares the same `tokio` runtime edge (plus `futures-util`).
 [features]
 default = ["process"]
-process = ["dep:tokio"]
+process = ["dep:tokio", "dep:futures-util"]
 
 # Test-only. `indexmap` is the ordered map the `ProcessSpec.env` field uses; the process-adapter
 # tests build specs directly, so they need to name the same map type the port declares.
