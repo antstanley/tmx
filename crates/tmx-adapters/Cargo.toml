@@ -33,5 +33,32 @@ async-trait = "0.1"
 # `tmx-core` conformance tests already use.
 jsonschema = { version = "0.46", default-features = false }
 
+# The OS-process `ProcessRunner` adapter (task 16). `tokio` is the async runtime the effecting
+# boundary awaits — the only async runtime in the tree, and it lives *here*, never in a pure crate
+# (enforced by scripts/purity.sh). It is `optional` and pulled in solely by the `process` feature so
+# `--no-default-features` yields a build with no async runtime at all. Feature set is the minimum the
+# adapter needs: `process` (spawn + piped stdio), `io-util` (capped pipe reads / stdin writes),
+# `time` (the per-task timeout), `rt` + `rt-multi-thread` + `macros` (the runtime and `#[tokio::test]`).
+tokio = { version = "1", optional = true, features = [
+    "process",
+    "io-util",
+    "time",
+    "rt",
+    "rt-multi-thread",
+    "macros",
+] }
+
+# `process` gates the OS-process adapter and its `tokio` edge; it is on by default so the standard
+# `cargo nextest run` exercises the real-process adapter tests (they are never silently skipped),
+# while `--no-default-features` drops tokio for a minimal build.
+[features]
+default = ["process"]
+process = ["dep:tokio"]
+
+# Test-only. `indexmap` is the ordered map the `ProcessSpec.env` field uses; the process-adapter
+# tests build specs directly, so they need to name the same map type the port declares.
+[dev-dependencies]
+indexmap = { workspace = true }
+
 [lints]
 workspace = true

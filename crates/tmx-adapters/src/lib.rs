@@ -14,3 +14,9 @@
 pub mod loader;
 pub mod resolve;
 pub mod validate;
+
+// The tokio-runtime seam: the OS-process adapter and its `tokio` dependency are confined behind the
+// `process` Cargo feature (on by default), so a minimal or sandboxed build can drop the async
+// runtime with `--no-default-features`. This is the only module that reaches for `tokio`.
+#[cfg(feature = "process")]
+pub mod process;
