@@ -130,6 +130,21 @@ const _: () = assert!(
     "captured output must admit at least one byte"
 );
 
+/// Maximum number of automatic retries a `fetch` (`HttpClient`) call may attempt on a retryable
+/// transport failure — the ceiling on a task's `retries` field.
+///
+/// Bounds the retry loop in the HTTP adapter so a flapping host can never drive unbounded requests
+/// (06 §Executor ports — bounded `retries`; development-guidelines.md §Defensive coding). A task's
+/// declared `retries` is clamped to this ceiling; the adapter therefore makes at most
+/// `FETCH_RETRIES_MAX + 1` attempts (the initial try plus the capped retries), then returns the last
+/// transport failure as a typed `RunError`. Tunability: **structurally fixed** — a safety bound, not
+/// a tuning knob.
+pub const FETCH_RETRIES_MAX: u32 = 5;
+const _: () = assert!(
+    FETCH_RETRIES_MAX >= 1,
+    "the fetch retry ceiling must admit at least one retry"
+);
+
 /// Maximum number of tasks across a context's lifecycle hooks (`create`/`change`/`destroy`/`error`).
 ///
 /// Bounds hook bodies, which run through the same runner one level deep. Enforced at preflight (04

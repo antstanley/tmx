@@ -191,13 +191,13 @@ fn an_unresolved_flow_exits_four() {
 
 #[test]
 fn a_flow_needing_an_unwired_port_exits_five() {
-    // O2/composition: a `fetch` Flow needs the HttpClient port, which is a denying stub in this build.
+    // O2/composition: a `file` Flow needs the FileSystem port, which is a denying stub in this build.
     // The capability check reports it up front as an environment error → exit 5, before any task runs.
     let dir = temp_dir("cap");
     let flow = write(
         &dir,
         "flow.yaml",
-        "name: demo\ntasks:\n  - name: get\n    type: fetch\n    with:\n      url: https://example.com\n      method: GET\n",
+        "name: demo\ntasks:\n  - name: check\n    type: file\n    with:\n      operation: exists\n      path: /tmp/tmx-nonexistent\n",
     );
     let out = run_flow(&flow, &[]);
     assert_eq!(

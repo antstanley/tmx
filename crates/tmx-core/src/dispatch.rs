@@ -386,9 +386,23 @@ fn build_fetch_request(fw: &FetchWith, scope: &Scope<'_>) -> Result<HttpRequest,
             query.insert(key.clone(), value_to_str(&interp_value(value, scope)?));
         }
     }
+    // Serialise the body per `bodyType` (schema default `json`), and set a matching `Content-Type`
+    // unless the task already declared one — so `fetch` honours `bodyType` end-to-end while a
+    // caller-supplied header always wins.
     let body = match &fw.body {
         None => None,
-        Some(value) => Some(value_to_str(&interp_value(value, scope)?).into_bytes()),
+        Some(value) => {
+            let resolved = interp_value(value, scope)?;
+            let body_type = fw.body_type.as_deref().unwrap_or(FETCH_BODY_TYPE_DEFAULT);
+            let (bytes, content_type) = serialize_fetch_body(&resolved, body_type);
+            if !headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case(CONTENT_TYPE_HEADER))
+            {
+                headers.insert(CONTENT_TYPE_HEADER.to_string(), content_type.to_string());
+            }
+            Some(bytes)
+        }
     };
     Ok(HttpRequest {
         method: fw
@@ -405,6 +419,71 @@ fn build_fetch_request(fw: &FetchWith, scope: &Scope<'_>) -> Result<HttpRequest,
         retries: fw.retries.unwrap_or(0),
         timeout: fw.timeout.as_ref().and_then(duration_to_ms),
     })
+}
+
+/// The `bodyType` used when a `fetch` task omits it — the schema default (`json`).
+const FETCH_BODY_TYPE_DEFAULT: &str = "json";
+/// The header name a serialised `fetch` body sets a default value for.
+const CONTENT_TYPE_HEADER: &str = "Content-Type";
+
+/// Serialise a resolved `fetch` body per `body_type`, returning the bytes and the default
+/// `Content-Type` for that type. `json` (and any unrecognised type — the schema constrains the input,
+/// so this is a defensive fallback, not a silent accept) serialises as compact JSON; `form` as
+/// `application/x-www-form-urlencoded`; `text`/`binary` as the raw string bytes.
+fn serialize_fetch_body(value: &Value, body_type: &str) -> (Vec<u8>, &'static str) {
+    match body_type {
+        "form" => (
+            form_urlencode(value).into_bytes(),
+            "application/x-www-form-urlencoded",
+        ),
+        "text" => (
+            value_to_str(value).into_bytes(),
+            "text/plain; charset=utf-8",
+        ),
+        "binary" => (value_to_str(value).into_bytes(), "application/octet-stream"),
+        _ => (
+            // `to_vec` on a `Value` does not fail in practice; the fallback keeps this panic-free
+            // (no `unwrap`) if it ever did.
+            serde_json::to_vec(value).unwrap_or_else(|_| value_to_str(value).into_bytes()),
+            "application/json",
+        ),
+    }
+}
+
+/// Encode a `form` body as `application/x-www-form-urlencoded`. An object becomes `k=v&k2=v2` with
+/// each key and value percent-encoded; any non-object value falls back to a single percent-encoded
+/// field so a mis-shaped body is still transmitted rather than dropped.
+fn form_urlencode(value: &Value) -> String {
+    match value {
+        Value::Object(map) => map
+            .iter()
+            .map(|(key, val)| {
+                format!(
+                    "{}={}",
+                    percent_encode(key),
+                    percent_encode(&value_to_str(val))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("&"),
+        other => percent_encode(&value_to_str(other)),
+    }
+}
+
+/// Percent-encode `input` for `application/x-www-form-urlencoded`: unreserved characters
+/// (`A–Z a–z 0–9 - _ . ~`) pass through, a space becomes `+`, and every other byte becomes `%XX`.
+fn percent_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            b' ' => out.push('+'),
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
 }
 
 /// Build a [`FileOp`] for a `file` task, dispatching on its `operation`.
@@ -595,4 +674,104 @@ fn parse_duration_spec(spec: &str) -> Option<u64> {
         .parse::<u64>()
         .ok()
         .map(|n| n.saturating_mul(unit_ms))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn json_body_type_serialises_compact_json_with_the_json_content_type() {
+        // An object body under the default `json` type is compact JSON and carries application/json.
+        let (bytes, content_type) = serialize_fetch_body(&json!({"a": 1, "b": "x"}), "json");
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            r#"{"a":1,"b":"x"}"#,
+            "a json body is compact JSON"
+        );
+        assert_eq!(
+            content_type, "application/json",
+            "the json content type is set"
+        );
+    }
+
+    #[test]
+    fn form_body_type_urlencodes_pairs_with_the_form_content_type() {
+        // A form body becomes k=v&k2=v2 with the form content type; reserved chars are percent-encoded.
+        let (bytes, content_type) =
+            serialize_fetch_body(&json!({"name": "a b", "sym": "x&y"}), "form");
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            "name=a+b&sym=x%26y",
+            "a form body is url-encoded, space→+ and & escaped"
+        );
+        assert_eq!(
+            content_type, "application/x-www-form-urlencoded",
+            "the form content type is set"
+        );
+    }
+
+    #[test]
+    fn text_and_binary_body_types_send_raw_bytes_with_their_content_types() {
+        // Text keeps the raw string (no JSON quoting) and is text/plain; binary is octet-stream.
+        let (text_bytes, text_ct) = serialize_fetch_body(&json!("hello world"), "text");
+        assert_eq!(
+            String::from_utf8(text_bytes).unwrap(),
+            "hello world",
+            "a text body is the raw string, not JSON-quoted"
+        );
+        assert_eq!(text_ct, "text/plain; charset=utf-8", "text content type");
+
+        let (bin_bytes, bin_ct) = serialize_fetch_body(&json!("raw"), "binary");
+        assert_eq!(bin_bytes, b"raw", "a binary body is the raw bytes");
+        assert_eq!(bin_ct, "application/octet-stream", "binary content type");
+    }
+
+    #[test]
+    fn an_unrecognised_body_type_falls_back_to_json_never_panics() {
+        // Negative space: an out-of-enum bodyType (the schema constrains input, but the adapter is
+        // defensive) falls back to JSON rather than panicking or dropping the body.
+        let (bytes, content_type) = serialize_fetch_body(&json!({"k": "v"}), "totally-unknown");
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            r#"{"k":"v"}"#,
+            "an unknown body type defaults to JSON"
+        );
+        assert_eq!(
+            content_type, "application/json",
+            "and the JSON content type"
+        );
+    }
+
+    #[test]
+    fn percent_encode_passes_unreserved_and_escapes_the_rest() {
+        // Unreserved characters pass through; a space is '+'; other bytes are %XX (upper hex).
+        assert_eq!(
+            percent_encode("aZ0-_.~"),
+            "aZ0-_.~",
+            "unreserved characters are untouched"
+        );
+        assert_eq!(
+            percent_encode("a b/c?"),
+            "a+b%2Fc%3F",
+            "space→+, and reserved bytes are percent-encoded uppercase"
+        );
+    }
+
+    #[test]
+    fn form_urlencode_of_a_non_object_encodes_a_single_field() {
+        // Negative space: a mis-shaped (non-object) form body is still transmitted, percent-encoded,
+        // not silently dropped.
+        assert_eq!(
+            form_urlencode(&json!("a=b c")),
+            "a%3Db+c",
+            "a non-object form body is a single encoded field"
+        );
+        assert_eq!(
+            form_urlencode(&json!(42)),
+            "42",
+            "a number encodes verbatim"
+        );
+    }
 }

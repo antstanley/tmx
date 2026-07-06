@@ -26,3 +26,9 @@ pub mod validate;
 // runtime with `--no-default-features`. This is the only module that reaches for `tokio`.
 #[cfg(feature = "process")]
 pub mod process;
+
+// The HTTP `fetch` adapter and its `reqwest` dependency are confined behind the `http` Cargo feature
+// (on by default), so a minimal or sandboxed build can drop the HTTP client with
+// `--no-default-features`. This is the only module that reaches for `reqwest`.
+#[cfg(feature = "http")]
+pub mod http;

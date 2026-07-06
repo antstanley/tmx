@@ -6,17 +6,17 @@
 //! same core runs against these built-in adapters or the testkit fakes without change. Task 17 wires
 //! the `exec`/`assert` path — the real process runner, source loader, reference resolver, schema
 //! validator, system clock, UUIDv7 id generator, `env` secret resolver, and the stderr progress
-//! reporter — plus the serial scheduler (used once `map` fan-out lands, task 18) and **denying stubs**
-//! for the not-yet-built `fetch`/`file`/`store`/`chat` executors. The capability check
+//! reporter — plus the serial scheduler (used once `map` fan-out lands, task 18); task 20 adds the
+//! real `reqwest` HTTP client for `fetch`, leaving **denying stubs** for the not-yet-built
+//! `file`/`store`/`chat` executors. The capability check
 //! ([`available_capabilities`](Composed::available_capabilities)) advertises only the ports that are
 //! real, so a Flow needing a stubbed one fails preflight up front rather than at the stub.
 
 use std::path::PathBuf;
 
 use tmx_adapters::clock::SystemClock;
-use tmx_adapters::deny::{
-    DenyingChatModel, DenyingFileSystem, DenyingHttpClient, DenyingObjectStore,
-};
+use tmx_adapters::deny::{DenyingChatModel, DenyingFileSystem, DenyingObjectStore};
+use tmx_adapters::http::ReqwestHttpClient;
 use tmx_adapters::idgen::Uuidv7Generator;
 use tmx_adapters::loader::FileSourceLoader;
 use tmx_adapters::process::OsProcessRunner;
@@ -40,7 +40,7 @@ use tmx_core::{
 /// borrowed [`Ports`] bundle it lends the core outlives the run.
 pub struct Composed {
     process: OsProcessRunner,
-    http: DenyingHttpClient,
+    http: ReqwestHttpClient,
     file: DenyingFileSystem,
     store: DenyingObjectStore,
     chat: DenyingChatModel,
@@ -69,7 +69,7 @@ impl Composed {
     pub fn new(base_dir: PathBuf) -> Result<Self, RunError> {
         Ok(Self {
             process: OsProcessRunner::new(),
-            http: DenyingHttpClient,
+            http: ReqwestHttpClient::new()?,
             file: DenyingFileSystem,
             store: DenyingObjectStore,
             chat: DenyingChatModel,
@@ -113,13 +113,15 @@ impl Composed {
     }
 
     /// The effecting capabilities that are wired and *real* in this build: `exec`/`run` via the
-    /// process runner and structured secrets via the `env` resolver. `fetch`/`file`/`store`/`chat`
-    /// are denying stubs, so they are advertised as **absent** — a Flow needing one fails the
-    /// capability check up front (03 §Capability check) rather than reaching a stub.
+    /// process runner, `fetch` via the `reqwest` HTTP client, and structured secrets via the `env`
+    /// resolver. `file`/`store`/`chat` are still denying stubs, so they are advertised as **absent**
+    /// — a Flow needing one fails the capability check up front (03 §Capability check) rather than
+    /// reaching a stub.
     #[must_use]
     pub fn available_capabilities(&self) -> AvailableCapabilities {
         AvailableCapabilities::none()
             .with(Capability::Process)
+            .with(Capability::Http)
             .with(Capability::Secret)
     }
 
@@ -185,9 +187,10 @@ mod tests {
         let caps = composed.available_capabilities();
         assert!(caps.has(Capability::Process), "exec/run is wired and real");
         assert!(caps.has(Capability::Secret), "env secrets are wired");
+        assert!(caps.has(Capability::Http), "fetch is wired and real");
         assert!(
-            !caps.has(Capability::Http),
-            "fetch is a denying stub, not real"
+            !caps.has(Capability::File),
+            "file is a denying stub, not real"
         );
         assert!(
             !caps.has(Capability::Chat),
