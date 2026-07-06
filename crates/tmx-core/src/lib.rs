@@ -30,6 +30,7 @@ pub mod matcher;
 pub mod merge;
 pub mod model;
 pub mod ports;
+pub mod preflight;
 pub mod resolve;
 pub mod runner;
 pub mod usecases;
@@ -44,6 +45,10 @@ pub use model::{
     BlobWrapper, Diagnostic, EvalCase, EvalSummary, Event, MessageWrapper, Milliseconds, Pipeline,
     PipelineState, ResolvedFlow, RunId, RunRecord, RunStatus, Scope, Scorecard, Severity,
     TaskResult, TaskStatus, Timestamp,
+};
+pub use preflight::{
+    AvailableCapabilities, Capability, CapabilitySet, PreflightPorts, PreflightTarget, Preflighted,
+    preflight,
 };
 pub use resolve::{merged_inputs, resolve_flow};
 pub use runner::{PipelineRunner, Ports, ProducesCheck, RunConfig, RunOutcome};
