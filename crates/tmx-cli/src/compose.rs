@@ -5,7 +5,8 @@
 //! lives here and nowhere else: the use cases and the runner see only `dyn Port` trait objects, so the
 //! same core runs against these built-in adapters or the testkit fakes without change. Task 17 wires
 //! the `exec`/`assert` path — the real process runner, source loader, reference resolver, schema
-//! validator, system clock, UUIDv7 id generator, `env` secret resolver, and the stderr progress
+//! validator, system clock, UUIDv7 id generator, `env`/`file` secret resolver (extended in task 24
+//! with the `file` source and the provider trait seam), and the stderr progress
 //! reporter — plus the serial scheduler (used once `map` fan-out lands, task 18); task 20 adds the
 //! real `reqwest` HTTP client for `fetch` and task 21 the real [`LocalFileSystem`] for `file`; task
 //! 22 wires the real `S3ObjectStore` for `store` behind the opt-in `store` Cargo feature (the
@@ -32,7 +33,7 @@ use tmx_adapters::process::OsProcessRunner;
 use tmx_adapters::report::StderrProgressSink;
 use tmx_adapters::resolve::FileReferenceResolver;
 use tmx_adapters::scheduler::SerialScheduler;
-use tmx_adapters::secret::EnvSecretResolver;
+use tmx_adapters::secret::BuiltinSecretResolver;
 #[cfg(feature = "store")]
 use tmx_adapters::store::S3ObjectStore;
 use tmx_adapters::validate::JsonSchemaValidator;
@@ -67,7 +68,7 @@ pub struct Composed {
     chat: DenyingChatModel,
     clock: SystemClock,
     events: StderrProgressSink,
-    secrets: EnvSecretResolver,
+    secrets: BuiltinSecretResolver,
     schema: JsonSchemaValidator,
     references: FileReferenceResolver,
     loader: FileSourceLoader,
@@ -102,7 +103,7 @@ impl Composed {
             chat: DenyingChatModel,
             clock: SystemClock::new(),
             events: StderrProgressSink::new(),
-            secrets: EnvSecretResolver::new(),
+            secrets: BuiltinSecretResolver::new(),
             schema: JsonSchemaValidator::new()?,
             references: FileReferenceResolver::new(base_dir),
             loader: FileSourceLoader::new(),
@@ -141,7 +142,7 @@ impl Composed {
 
     /// The effecting capabilities that are wired and *real* in this build: `exec`/`run` via the
     /// process runner, `fetch` via the `reqwest` HTTP client, `file` via the local filesystem, and
-    /// structured secrets via the `env` resolver. `store` is real only when the `store` Cargo feature
+    /// structured secrets via the `env`/`file` resolver. `store` is real only when the `store` Cargo feature
     /// wires the S3-compatible object store, and `chat` only when the `chat` Cargo feature wires the
     /// ChatCompletions model; otherwise each is a denying stub. An unwired capability is advertised as
     /// **absent** — a Flow needing one fails the capability check up front (03 §Capability check)

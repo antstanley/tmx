@@ -254,3 +254,154 @@ fn a_requested_secret_echoed_by_a_task_never_reaches_stdout() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn a_file_secret_echoed_by_a_task_never_reaches_stdout() {
+    // O1: a `file`-sourced secret resolves for a task that lists it, and the echoed value is redacted
+    // out of both the final state on stdout and the progress on stderr — the raw value appears nowhere.
+    let dir = temp_dir("file-secret");
+    let secret_path = write(&dir, "token.secret", "filesecretvalue\n");
+    let flow = write(
+        &dir,
+        "flow.yaml",
+        &format!(
+            "name: demo\ncontext:\n  secrets:\n    TOKEN:\n      file: {}\ntasks:\n  - name: leak\n    type: exec\n    secrets: [TOKEN]\n    with:\n      command: \"printf %s '${{{{ secrets.TOKEN }}}}'\"\n",
+            secret_path.display()
+        ),
+    );
+    let out = run_flow(&flow, &[]);
+
+    assert_eq!(
+        out.code,
+        Some(0),
+        "the file-secret flow runs; stderr: {}",
+        out.stderr
+    );
+    assert!(
+        !out.stdout.contains("filesecretvalue"),
+        "the raw file secret must not appear on stdout, got {:?}",
+        out.stdout
+    );
+    assert!(
+        !out.stderr.contains("filesecretvalue"),
+        "the raw file secret must not appear on stderr either"
+    );
+    let state: Value =
+        serde_json::from_str(out.stdout.trim()).unwrap_or_else(|e| panic!("stdout is JSON: {e}"));
+    // The task echoed the trailing-newline-stripped file value; it is redacted in the final state.
+    assert_eq!(
+        state["leak"]["message"], "[REDACTED]",
+        "the echoed file secret is redacted in the final state"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn an_empty_file_secret_is_a_typed_resolution_error_not_a_panic() {
+    // Negative space / regression: a `file` secret whose content is only a trailing newline strips to
+    // "" — an empty resolved value the Masker cannot register. A task that lists it must fail with a
+    // typed resolution error (surfacing as exit 1, asserted below), NEVER a Rust panic (exit 101)
+    // from the downstream masker.
+    let dir = temp_dir("empty-file-secret");
+    let secret_path = write(&dir, "empty.secret", "\n");
+    let flow = write(
+        &dir,
+        "flow.yaml",
+        &format!(
+            "name: demo\ncontext:\n  secrets:\n    TOKEN:\n      file: {}\ntasks:\n  - name: use\n    type: exec\n    secrets: [TOKEN]\n    with:\n      command: printf done\n",
+            secret_path.display()
+        ),
+    );
+    let out = run_flow(&flow, &[]);
+
+    // A requested secret that fails to resolve surfaces as a task failure (exit 1) — the same contract
+    // as any other resolution failure for a requested secret. The regression it guards is exit 101: the
+    // masker used to panic on the empty resolved value before this typed error stopped the run cleanly.
+    assert_eq!(
+        out.code,
+        Some(1),
+        "an empty file secret fails the run cleanly (exit 1), not a panic (101); stderr: {}",
+        out.stderr
+    );
+    assert_ne!(
+        out.code,
+        Some(101),
+        "the process must not panic on an empty resolved secret"
+    );
+    assert!(
+        out.stderr.contains("empty value"),
+        "the diagnostic names the empty-secret failure, got {:?}",
+        out.stderr
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn an_empty_literal_secret_is_a_typed_resolution_error_not_a_panic() {
+    // Negative space / regression: a `literal` secret whose value is the empty string bypasses the
+    // adapter (env/file guards do not run for a literal), so it is the runner seam that must reject it.
+    // A task that lists it must fail with a typed resolution error (exit 1), NEVER a Rust panic (exit
+    // 101) from `masker.assert_ready` over an unregistered empty secret.
+    let dir = temp_dir("empty-literal-secret");
+    let flow = write(
+        &dir,
+        "flow.yaml",
+        "name: demo\ncontext:\n  secrets:\n    TOKEN: \"\"\ntasks:\n  - name: use\n    type: exec\n    secrets: [TOKEN]\n    with:\n      command: printf done\n",
+    );
+    let out = run_flow(&flow, &[]);
+
+    assert_eq!(
+        out.code,
+        Some(1),
+        "an empty literal secret fails the run cleanly (exit 1), not a panic (101); stderr: {}",
+        out.stderr
+    );
+    assert_ne!(
+        out.code,
+        Some(101),
+        "the process must not panic on an empty resolved literal secret"
+    );
+    assert!(
+        out.stderr.contains("empty value"),
+        "the diagnostic names the empty-secret failure, got {:?}",
+        out.stderr
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn an_unrequested_secret_is_never_resolved_or_bound() {
+    // O2 (negative space): the context defines a secret whose `file` source points at a path that does
+    // NOT exist. No task lists it, so it is never resolved — a resolution error would surface if it
+    // were. The one task that runs lists nothing and succeeds, proving an unrequested secret has no
+    // resolution path into scope.
+    let dir = temp_dir("unrequested-secret");
+    let flow = write(
+        &dir,
+        "flow.yaml",
+        "name: demo\ncontext:\n  secrets:\n    UNUSED:\n      file: /no/such/tmx/unrequested/secret\ntasks:\n  - name: work\n    type: exec\n    with:\n      command: printf done\n",
+    );
+    let out = run_flow(&flow, &[]);
+
+    assert_eq!(
+        out.code,
+        Some(0),
+        "the flow runs cleanly; the unrequested secret's bad source is never touched. stderr: {}",
+        out.stderr
+    );
+    let state: Value =
+        serde_json::from_str(out.stdout.trim()).unwrap_or_else(|e| panic!("stdout is JSON: {e}"));
+    assert_eq!(
+        state["work"]["message"], "done",
+        "the task that requested no secret ran to completion"
+    );
+    assert!(
+        state.get("UNUSED").is_none(),
+        "the unrequested secret is never bound into scope, got {state:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

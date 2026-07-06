@@ -188,6 +188,19 @@ const _: () = assert!(
     "the mask-scan floor must exclude empty values"
 );
 
+/// Maximum size of a `file`-sourced secret, in bytes.
+///
+/// Bounds how many bytes the `SecretResolver` will read from a `secretSource: { file: … }` path
+/// before treating the file as a secret value (06 §Secret resolution; development-guidelines.md
+/// §Defensive coding — every read is bounded). A secret (a token, a key) is small; a larger file is
+/// a typed resolution error (`code: secret_file_too_large`), never buffered wholesale into memory.
+/// Tunability: **structurally fixed** — a safety bound, not a tuning knob.
+pub const SECRET_FILE_MAX_BYTES: u64 = BYTES_PER_MIB;
+const _: () = assert!(
+    SECRET_FILE_MAX_BYTES >= 1,
+    "a secret file must admit at least one byte"
+);
+
 /// Default per-case pass threshold for an `eval` — the score at or above which a case counts as
 /// passing when a `threshold.passScore` is not set, as a ratio in `[0, 1]`.
 ///

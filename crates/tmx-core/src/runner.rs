@@ -893,6 +893,18 @@ async fn resolve_secrets(
                 SecretValue::Literal(literal) => literal.clone(),
                 SecretValue::Source(source) => ports.secrets.resolve(source).await?,
             };
+            // Single choke point for every resolver (literal, provider, any future seam): an empty
+            // resolved secret cannot be registered with the Masker (it skips empty registrations by
+            // design), so it would slip downstream unmaskable and later trip `masker.assert_ready`.
+            // Reject it typed here — before `register`/push — so the run fails cleanly instead of
+            // panicking.
+            if value.is_empty() {
+                return Err(RunError::resolution(
+                    "secret_value_empty",
+                    format!("task requested secret {requested:?} resolved to an empty value"),
+                )
+                .with_task(task.name.as_deref().unwrap_or_default()));
+            }
             masker.register(value.clone());
             resolved_secrets.push(value.clone());
             map.insert(requested.clone(), Value::String(value));
