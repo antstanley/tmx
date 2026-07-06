@@ -53,7 +53,7 @@ pub use model::{
 };
 pub use preflight::{
     AvailableCapabilities, Capability, CapabilitySet, PreflightPorts, PreflightTarget, Preflighted,
-    preflight,
+    preflight, resolve_referenced_flow,
 };
 pub use resolve::{merged_inputs, resolve_flow};
 pub use runner::{

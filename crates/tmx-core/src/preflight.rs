@@ -327,6 +327,42 @@ pub async fn preflight(
     })
 }
 
+/// Inline every reference-form `environment` / `context` / hook body in a loaded flow `source` to its
+/// inline form through the reference/loader/schema `ports`, then resolve the fully-inlined Flow into
+/// the runner-facing [`ResolvedFlow`].
+///
+/// This is [`preflight`]'s reference-resolution step (03 §Reference resolution) exposed for the
+/// reference-driven [`RunFlow`](crate::ports::driving::RunFlow) use case, whose own load → run path
+/// would otherwise call [`resolve`](crate::resolve::resolve) directly and fail-close on a
+/// reference-form `context` / `environment`. Routing that path through here means it applies the
+/// *identical* inlining preflight does — `kind` dispatch, the [`JSON_DEPTH_MAX`] depth bound, schema
+/// validation, and the `reference_kind_mismatch` guard — so a reference-form context/environment runs
+/// end-to-end with the same resolved shape an inline form produces. An inline-form flow carries no
+/// reference to chase, so it resolves identically to the direct path (no double resolution).
+///
+/// Any non-fatal reference-resolution warnings are discarded here: the use case's terminal
+/// [`RunRecord`](crate::model::RunRecord) carries the run outcome, and preflight surfaces the same
+/// diagnostics on the `tmx run` path that gates every CLI run.
+///
+/// # Errors
+///
+/// Propagates a `flow_parse_error` (`source` is not a Flow), the resolver/loader's typed errors (a
+/// dangling reference), a `json_too_deep` / `schema_invalid` breach on a referenced artifact, and a
+/// `reference_kind_mismatch` when a referenced file's class contradicts the referring field.
+pub async fn resolve_referenced_flow(
+    source: Value,
+    ports: PreflightPorts<'_>,
+) -> Result<ResolvedFlow, RunError> {
+    let flow: Flow = serde_json::from_value(source).map_err(|e| {
+        RunError::validation("flow_parse_error", format!("could not parse the flow: {e}"))
+    })?;
+    // Warnings are non-fatal and not surfaced on the reference-driven use-case path; the `tmx run`
+    // path preflights and reports them separately.
+    let mut warnings = Vec::new();
+    let flow = resolve_references(flow, ports, &mut warnings).await?;
+    resolve(flow)
+}
+
 /// Resolve and load every file the `target` names, dispatching each to its [`ArtifactClass`].
 async fn load_artifacts(
     target: &PreflightTarget,

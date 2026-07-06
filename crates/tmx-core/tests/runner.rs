@@ -707,3 +707,196 @@ fn runner_seeds_prior_state_so_a_sliced_continuation_reads_it() {
         "without the seed the prior-state read is absent and the assert fails"
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Task 36 — reference-form context / environment run end-to-end through the `EngineRunFlow` use
+// case, exactly as the preflighted `tmx run` path does. Before the fix the use case re-loaded and
+// resolved the flow from scratch, so a reference-form `context` / `environment` fail-closed with a
+// typed `unsupported_reference` (exit 4) instead of running.
+// ---------------------------------------------------------------------------------------------
+
+/// Seed `reference` → `flow_json`, plus `ctx_ref` → a standalone context carrying `env.GREETING`, so
+/// the flow's reference-form `context` chases to it through the same resolver/loader the runner holds.
+fn seed_flow_with_referenced_context(
+    bundle: &mut Bundle,
+    reference: &str,
+    ctx_ref: &str,
+    flow_json: Value,
+    greeting: &str,
+) {
+    let flow_path = format!("{reference}.yaml");
+    let ctx_path = format!("{ctx_ref}.yaml");
+    bundle.refs = FakeReferenceResolver::new()
+        .with_reference(reference, flow_path.clone(), SourceKind::Yaml)
+        .with_reference(ctx_ref, ctx_path.clone(), SourceKind::Yaml);
+    bundle.loader = FakeSourceLoader::new()
+        .with_source(flow_path, flow_json)
+        .with_source(
+            ctx_path,
+            json!({
+                "kind": "context",
+                "name": "default",
+                "env": { "GREETING": greeting }
+            }),
+        );
+}
+
+/// The single assert task that reads the context-provided `env.GREETING` and holds only when it
+/// equals `expected` — the observable proof the referenced context reached the run.
+fn greeting_assert_task(expected: &str) -> Value {
+    json!({
+        "name": "read-context",
+        "type": "assert",
+        "with": { "assertions": [
+            { "actual": "${{ env.GREETING }}", "matcher": "toBe", "expected": expected }
+        ] }
+    })
+}
+
+#[test]
+fn engine_run_flow_reference_form_context_runs_end_to_end_like_the_inline_form() {
+    // O1: a Flow whose `context` is a *reference* (an external-file path) runs end-to-end through the
+    // `EngineRunFlow` use case with the referenced context readable by a task — the same terminal
+    // status and final state as the inline equivalent, not a fail-closed `unsupported_reference`.
+    let mut reference_bundle = Bundle::new();
+    seed_flow_with_referenced_context(
+        &mut reference_bundle,
+        "ref-context",
+        "shared-context",
+        json!({
+            "name": "ref-context",
+            "context": "shared-context",
+            "tasks": [ greeting_assert_task("hello-from-ref") ]
+        }),
+        "hello-from-ref",
+    );
+    let reference_record = run_engine(&reference_bundle, "ref-context", json!({}))
+        .expect("the reference run completes");
+
+    // The inline equivalent: the same context spelled out in-place.
+    let mut inline_bundle = Bundle::new();
+    inline_bundle.seed_flow(
+        "inline-context",
+        json!({
+            "name": "ref-context",
+            "context": { "name": "default", "env": { "GREETING": "hello-from-ref" } },
+            "tasks": [ greeting_assert_task("hello-from-ref") ]
+        }),
+    );
+    let inline_record =
+        run_engine(&inline_bundle, "inline-context", json!({})).expect("the inline run completes");
+
+    assert_eq!(
+        reference_record.status,
+        RunStatus::Ok,
+        "the reference-form context run reaches a terminal ok (no fail-closed exit-4 resolution error)"
+    );
+    assert_eq!(
+        reference_record.status, inline_record.status,
+        "the reference form reaches the same terminal status as the inline form"
+    );
+    assert_eq!(
+        reference_record.final_state.map(|s| s.as_value().clone()),
+        inline_record.final_state.map(|s| s.as_value().clone()),
+        "the referenced context yields the same final state as the inline context"
+    );
+}
+
+#[test]
+fn engine_run_flow_reference_form_context_holds_the_resolved_value() {
+    // O1 (negative half): the referenced context is actually *inlined and read*, not silently
+    // dropped — asserting the wrong expected value fails the run, proving the real context value
+    // (`hello-from-ref`) crossed into the `env` namespace.
+    let mut bundle = Bundle::new();
+    seed_flow_with_referenced_context(
+        &mut bundle,
+        "ref-context",
+        "shared-context",
+        json!({
+            "name": "ref-context",
+            "context": "shared-context",
+            "tasks": [ greeting_assert_task("the-wrong-value") ]
+        }),
+        "hello-from-ref",
+    );
+    let record = run_engine(&bundle, "ref-context", json!({})).expect("the run completes");
+    assert_eq!(
+        record.status,
+        RunStatus::Failed,
+        "the assert reads the real referenced value and fails against the wrong expectation"
+    );
+    let results = &record.results;
+    assert_eq!(results.len(), 1, "the single assert task produced a result");
+    assert_eq!(
+        results[0].status,
+        TaskStatus::Error,
+        "the failure is the assert's, i.e. the context resolved and was read"
+    );
+}
+
+#[test]
+fn engine_run_flow_reference_form_environment_runs_end_to_end() {
+    // O2: a Flow whose `environment` is a *reference* resolves through to execution rather than
+    // fail-closing at the use case's re-load. The referenced environment is a provider-less `local`
+    // one, so it needs no capability yet still exercises the reference-inlining path.
+    let mut bundle = Bundle::new();
+    bundle.refs = FakeReferenceResolver::new()
+        .with_reference("ref-env", "ref-env.yaml", SourceKind::Yaml)
+        .with_reference("shared-env", "shared-env.yaml", SourceKind::Yaml);
+    bundle.loader = FakeSourceLoader::new()
+        .with_source(
+            "ref-env.yaml",
+            json!({
+                "name": "ref-env",
+                "environment": "shared-env",
+                "tasks": [ {
+                    "name": "gate",
+                    "type": "assert",
+                    "with": { "assertions": [
+                        { "actual": 1, "matcher": "toBe", "expected": 1 }
+                    ] }
+                } ]
+            }),
+        )
+        .with_source(
+            "shared-env.yaml",
+            json!({ "kind": "environment", "name": "local-env", "platform": "local" }),
+        );
+
+    let record =
+        run_engine(&bundle, "ref-env", json!({})).expect("the reference-env run completes");
+    assert_eq!(
+        record.status,
+        RunStatus::Ok,
+        "the reference-form environment resolves through to execution (no fail-closed exit-4)"
+    );
+    assert_eq!(record.results.len(), 1, "the flow's single task ran");
+}
+
+#[test]
+fn engine_run_flow_dangling_context_reference_is_a_typed_resolution_error() {
+    // O3 (negative space): a reference-form `context` that resolves to nothing still fails typed — the
+    // resolver's `Resolution` error surfaces (exit 4), it is not swallowed or turned into a run.
+    let mut bundle = Bundle::new();
+    // Seed only the flow; its `context` reference is deliberately left unresolvable.
+    bundle.seed_flow(
+        "dangling",
+        json!({
+            "name": "dangling",
+            "context": "missing-context",
+            "tasks": [ greeting_assert_task("hello-from-ref") ]
+        }),
+    );
+
+    let error = run_engine(&bundle, "dangling", json!({}))
+        .expect_err("a dangling context reference must fail, not run");
+    assert_eq!(
+        error.category,
+        ErrorCategory::Resolution,
+        "an unresolvable context reference is a typed Resolution error (exit 4)"
+    );
+    assert_eq!(
+        error.code, "reference_not_found",
+        "the resolver's typed reference-not-found code surfaces unchanged"
+    );
+}

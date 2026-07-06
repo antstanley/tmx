@@ -1143,3 +1143,104 @@ fn concurrency_precedence_flag_beats_env_beats_profile_beats_project() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// ---------------------------------------------------------------------------------------------
+// Task 36 — reference-form context / environment run end-to-end through the real binary, not just
+// green at preflight. The flow's `context` / `environment` is an external-file path; the run must
+// exit 0 with the referenced values available, exactly as the inline form does.
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn a_reference_form_context_runs_end_to_end_and_a_task_reads_its_value() {
+    // Task 36 O1/O4 (Reviewable): a Flow whose `context` is an external-file reference runs to exit 0,
+    // and a task reads a value the referenced context supplies (`env.GREETING`) — it does NOT
+    // fail-close at exit 4 nor drop the context.
+    let dir = temp_dir("refcontext");
+    write(
+        &dir,
+        "context.yaml",
+        "kind: context\nname: default\nenv:\n  GREETING: hello-from-ref\n",
+    );
+    let flow = write(
+        &dir,
+        "flow.yaml",
+        "name: refctx\ncontext: ./context.yaml\ntasks:\n  - name: read\n    type: assert\n    with:\n      assertions:\n        - actual: \"${{ env.GREETING }}\"\n          matcher: toBe\n          expected: hello-from-ref\n",
+    );
+
+    let out = run_flow(&flow, &[]);
+    assert_eq!(
+        out.code,
+        Some(0),
+        "a reference-form context flow runs to exit 0 (not exit 4); stderr: {}",
+        out.stderr
+    );
+    let state: Value = serde_json::from_str(out.stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is one JSON object, got {:?}: {e}", out.stdout));
+    assert_eq!(
+        state["read"]["passed"], true,
+        "the assert read the referenced context's env value and held"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_reference_form_environment_runs_end_to_end() {
+    // Task 36 O2: a Flow whose `environment` is an external-file reference resolves through to
+    // execution and exits 0 rather than fail-closing at the engine re-load. A provider-less `local`
+    // environment needs no capability, isolating the reference-inlining path.
+    let dir = temp_dir("refenv");
+    write(
+        &dir,
+        "environment.yaml",
+        "kind: environment\nname: local-env\nplatform: local\n",
+    );
+    let flow = write(
+        &dir,
+        "flow.yaml",
+        "name: refenv\nenvironment: ./environment.yaml\ntasks:\n  - name: gate\n    type: assert\n    with:\n      assertions:\n        - actual: 1\n          matcher: toBe\n          expected: 1\n",
+    );
+
+    let out = run_flow(&flow, &[]);
+    assert_eq!(
+        out.code,
+        Some(0),
+        "a reference-form environment flow runs to exit 0 (not exit 4); stderr: {}",
+        out.stderr
+    );
+    let state: Value = serde_json::from_str(out.stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is one JSON object, got {:?}: {e}", out.stdout));
+    assert_eq!(
+        state["gate"]["passed"], true,
+        "the run executed under the referenced environment"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_dangling_reference_form_context_exits_four() {
+    // Task 36 O3 (negative space): a reference-form `context` pointing at a missing file still surfaces
+    // its typed resolution error → exit 4, with nothing on stdout.
+    let dir = temp_dir("refcontext-dangling");
+    let flow = write(
+        &dir,
+        "flow.yaml",
+        "name: bad\ncontext: ./does-not-exist.yaml\ntasks:\n  - name: gate\n    type: assert\n    with:\n      assertions:\n        - actual: 1\n          matcher: toBe\n          expected: 1\n",
+    );
+
+    let out = run_flow(&flow, &[]);
+    assert_eq!(
+        out.code,
+        Some(4),
+        "a dangling context reference is a resolution error → exit 4; stderr: {}",
+        out.stderr
+    );
+    assert!(
+        out.stdout.trim().is_empty(),
+        "no JSON on stdout for a resolution failure, got {:?}",
+        out.stdout
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

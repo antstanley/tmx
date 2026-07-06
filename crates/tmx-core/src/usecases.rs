@@ -22,8 +22,8 @@ use crate::mask::Masker;
 use crate::model::{Diagnostic, PipelineState, RunRecord, Severity};
 use crate::ports::driven::{IdGenerator, Scheduler};
 use crate::ports::driving::{LintFlow, RunFlow, RunOptions};
-use crate::preflight::PreflightPorts;
-use crate::resolve::{merged_inputs, resolve_flow};
+use crate::preflight::{PreflightPorts, resolve_referenced_flow};
+use crate::resolve::merged_inputs;
 use crate::runner::{PipelineRunner, Ports, RunConfig};
 
 /// The engine's [`RunFlow`] use case: load → resolve → run → mask, over a driven port bundle.
@@ -70,14 +70,21 @@ impl<S: Scheduler> RunFlow for EngineRunFlow<'_, S> {
         // via config, not `RunOptions`, so the options only gate future load-time behaviour here.
         let _ = &options;
 
-        // Load → resolve.
+        // Load → resolve. Resolution runs through the shared preflight reference-resolution step so a
+        // reference-form `context` / `environment` is inlined here exactly as `tmx run`'s preflight
+        // inlines it — the reference-driven path must not fail-close where the preflighted path runs.
         let resolved_source = self.ports.reference_resolver.resolve(reference).await?;
         let source = self
             .ports
             .source_loader
             .load(&resolved_source.path, resolved_source.kind)
             .await?;
-        let flow = resolve_flow(source)?;
+        let preflight_ports = PreflightPorts {
+            reference_resolver: self.ports.reference_resolver,
+            source_loader: self.ports.source_loader,
+            schema: self.ports.schema,
+        };
+        let flow = resolve_referenced_flow(source, preflight_ports).await?;
         let merged = merged_inputs(&inputs, &flow.inputs);
 
         // Run.
