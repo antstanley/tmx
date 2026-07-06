@@ -33,6 +33,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 [features]
 default = []
 store = ["tmx-adapters/store"]
+# The `chat-completion` executor is opt-in: this feature forwards to the adapter's own `chat` feature
+# so the composition root wires the real `ChatCompletionsModel` (and advertises the `chat` capability)
+# instead of the denying stub. Off by default, mirroring `store`.
+chat = ["tmx-adapters/chat"]
 
 [lints]
 workspace = true

@@ -43,3 +43,9 @@ pub mod fs;
 // over `reqwest`, so a minimal build drops it and its `reqwest`/`tokio`/`ring` edge entirely.
 #[cfg(feature = "store")]
 pub mod store;
+
+// The `chat-completion` adapter (and the `llmRubric` scorer backend), gated behind the `chat` Cargo
+// feature (opt-in, not in `default`). It POSTs an OpenAI-shaped ChatCompletions request over
+// `reqwest`, so a minimal build drops it and its `reqwest`/`tokio` edge entirely.
+#[cfg(feature = "chat")]
+pub mod chat;

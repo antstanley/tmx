@@ -14,7 +14,7 @@ use std::task::{Context, Poll};
 
 use serde_json::{Value, json};
 
-use tmx_core::ports::driven::{ProcessOutput, SourceKind};
+use tmx_core::ports::driven::{ChatResponse, ProcessOutput, SourceKind};
 use tmx_core::ports::driving::{RunFlow, RunOptions};
 use tmx_core::{
     EngineRunFlow, ErrorCategory, Event, Masker, Milliseconds, PipelineRunner, Ports, RunConfig,
@@ -186,6 +186,68 @@ fn runner_runs_multi_task_flow_emits_ordered_stream_and_masked_state() {
             "check": { "passed": true, "assertions": 1 }
         }),
         "the merged state matches the expected golden value"
+    );
+}
+
+#[test]
+fn runner_runs_a_chat_completion_task_and_merges_the_completion_into_state() {
+    // Task 23 O1/O4: a `chat-completion` task crosses the `ChatModel` port and merges the completion
+    // into state under the task's name. Driven over the `FakeChatModel` the completion is deterministic
+    // and the request reaching the model is recorded, so both the merged state and the sent prompt are
+    // asserted — the same port the `llmRubric` scorer uses (see tests/eval.rs).
+    let mut bundle = Bundle::new();
+    bundle.chat.push_result(Ok(ChatResponse {
+        content: "the-completion-text".to_string(),
+        model: "test-model".to_string(),
+        prompt_tokens: Some(11),
+        completion_tokens: Some(5),
+        ms: Milliseconds(0),
+    }));
+    bundle.seed_flow(
+        "ask",
+        json!({
+            "name": "ask",
+            "tasks": [
+                {
+                    "name": "reply",
+                    "type": "chat-completion",
+                    "with": {
+                        "model": "test-model",
+                        "messages": [ { "role": "user", "content": "hello there" } ]
+                    }
+                }
+            ]
+        }),
+    );
+
+    let record = run_engine(&bundle, "ask", json!({})).expect("the chat-completion run completes");
+    assert_eq!(
+        record.status,
+        RunStatus::Ok,
+        "the chat-completion run reaches a terminal ok"
+    );
+
+    // The completion is merged into state under the task name (the dispatcher's `{ content, model }`).
+    let final_state = record.final_state.expect("a final state was captured");
+    assert_eq!(
+        final_state.as_value(),
+        &json!({
+            "reply": { "content": "the-completion-text", "model": "test-model" }
+        }),
+        "the completion is merged into state under the task name"
+    );
+
+    // The request crossed the port with the resolved model and prompt.
+    let requests = bundle.chat.requests();
+    assert_eq!(requests.len(), 1, "exactly one completion was requested");
+    assert_eq!(
+        requests[0].model, "test-model",
+        "the model reached the port"
+    );
+    assert_eq!(
+        requests[0].messages.len(),
+        1,
+        "the single user message reached the port"
     );
 }
 

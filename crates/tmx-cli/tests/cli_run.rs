@@ -189,12 +189,18 @@ fn an_unresolved_flow_exits_four() {
     );
 }
 
+// Only meaningful when `chat` is off: with the opt-in `chat` feature the ChatModel port is wired to
+// the real `ChatCompletionsModel`, so a `chat-completion` Flow clears the capability check and this
+// exit-5 path no longer applies (a run with no endpoint configured is then a `chat_no_endpoint`
+// RunFailure → exit 1, exercised by the chat adapter's own tests). The default build keeps chat a
+// denying stub, so this is the capability-check gate under the standard `cargo nextest run`.
+#[cfg(not(feature = "chat"))]
 #[test]
 fn a_flow_needing_an_unwired_port_exits_five() {
     // O2/composition: a `chat-completion` Flow needs the ChatModel port, which is a denying stub in
-    // this build (`file`/`store` are wired to real adapters). The capability check reports it up front
-    // as an environment error → exit 5, before any task runs. `chat` is used deliberately because it is
-    // the port that stays unwired regardless of the opt-in `store` Cargo feature.
+    // the default build. The capability check reports it up front as an environment error → exit 5,
+    // before any task runs. `chat` is used deliberately because it is a port that stays unwired unless
+    // its opt-in Cargo feature is enabled.
     let dir = temp_dir("cap");
     let flow = write(
         &dir,

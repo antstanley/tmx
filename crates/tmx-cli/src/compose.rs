@@ -9,14 +9,18 @@
 //! reporter — plus the serial scheduler (used once `map` fan-out lands, task 18); task 20 adds the
 //! real `reqwest` HTTP client for `fetch` and task 21 the real [`LocalFileSystem`] for `file`; task
 //! 22 wires the real `S3ObjectStore` for `store` behind the opt-in `store` Cargo feature (the
-//! denying stub stands in when it is off), leaving a **denying stub** for the not-yet-built `chat`
-//! executor. The capability check
+//! denying stub stands in when it is off), and task 23 wires the real `ChatCompletionsModel` for
+//! `chat-completion` (and the `llmRubric` scorer) behind the opt-in `chat` Cargo feature (the denying
+//! stub stands in when it is off). The capability check
 //! ([`available_capabilities`](Composed::available_capabilities)) advertises only the ports that are
 //! real, so a Flow needing a stubbed one fails preflight up front rather than at the stub.
 
 use std::path::PathBuf;
 
+#[cfg(feature = "chat")]
+use tmx_adapters::chat::ChatCompletionsModel;
 use tmx_adapters::clock::SystemClock;
+#[cfg(not(feature = "chat"))]
 use tmx_adapters::deny::DenyingChatModel;
 #[cfg(not(feature = "store"))]
 use tmx_adapters::deny::DenyingObjectStore;
@@ -55,6 +59,11 @@ pub struct Composed {
     store: S3ObjectStore,
     #[cfg(not(feature = "store"))]
     store: DenyingObjectStore,
+    // Real ChatCompletions model when the `chat` feature is on, else the denying stub. The capability
+    // check advertises `chat` as present only in the former case.
+    #[cfg(feature = "chat")]
+    chat: ChatCompletionsModel,
+    #[cfg(not(feature = "chat"))]
     chat: DenyingChatModel,
     clock: SystemClock,
     events: StderrProgressSink,
@@ -87,6 +96,9 @@ impl Composed {
             store: S3ObjectStore::from_env()?,
             #[cfg(not(feature = "store"))]
             store: DenyingObjectStore,
+            #[cfg(feature = "chat")]
+            chat: ChatCompletionsModel::from_env()?,
+            #[cfg(not(feature = "chat"))]
             chat: DenyingChatModel,
             clock: SystemClock::new(),
             events: StderrProgressSink::new(),
@@ -130,9 +142,10 @@ impl Composed {
     /// The effecting capabilities that are wired and *real* in this build: `exec`/`run` via the
     /// process runner, `fetch` via the `reqwest` HTTP client, `file` via the local filesystem, and
     /// structured secrets via the `env` resolver. `store` is real only when the `store` Cargo feature
-    /// wires the S3-compatible object store; `chat` is still a denying stub. An unwired capability is
-    /// advertised as **absent** — a Flow needing one fails the capability check up front
-    /// (03 §Capability check) rather than reaching a stub.
+    /// wires the S3-compatible object store, and `chat` only when the `chat` Cargo feature wires the
+    /// ChatCompletions model; otherwise each is a denying stub. An unwired capability is advertised as
+    /// **absent** — a Flow needing one fails the capability check up front (03 §Capability check)
+    /// rather than reaching a stub.
     #[must_use]
     pub fn available_capabilities(&self) -> AvailableCapabilities {
         let caps = AvailableCapabilities::none()
@@ -142,6 +155,8 @@ impl Composed {
             .with(Capability::Secret);
         #[cfg(feature = "store")]
         let caps = caps.with(Capability::Store);
+        #[cfg(feature = "chat")]
+        let caps = caps.with(Capability::Chat);
         caps
     }
 
@@ -222,9 +237,15 @@ mod tests {
             caps.has(Capability::Store),
             "store is wired to the S3 object store and real with the `store` feature"
         );
+        #[cfg(not(feature = "chat"))]
         assert!(
             !caps.has(Capability::Chat),
-            "chat is a denying stub, not real"
+            "chat is a denying stub, not real without the `chat` feature"
+        );
+        #[cfg(feature = "chat")]
+        assert!(
+            caps.has(Capability::Chat),
+            "chat is wired to the ChatCompletions model and real with the `chat` feature"
         );
 
         // The scheduler is composed now (wired into fan-out in task 18) and is a usable handle: a
