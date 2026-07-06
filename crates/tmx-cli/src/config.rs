@@ -221,6 +221,14 @@ impl EffectiveConfig {
         self.values.get(key).and_then(Value::as_str)
     }
 
+    /// The raw resolved [`Value`] for `key`, when any layer set it — the accessor the numeric run-flag
+    /// resolvers ([`resolve_concurrency`]/[`resolve_max_state_size`]) read through, so a value that
+    /// arrived as a JSON number (a config file) or a string (a `TMX_*` env var) is both handled.
+    #[must_use]
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.values.get(key)
+    }
+
     /// The path a registered `name` maps to (the `names` layer), when the config declares one — the
     /// registered-name → path mapping `tmx run <name>` and the resource commands consult.
     #[must_use]
@@ -382,6 +390,251 @@ pub fn resolve_registered(flags: ConfigLayer, project_dir: &Path, reference: &st
     load_effective(flags, project_dir)
         .registered_path(reference)
         .map_or_else(|| reference.to_string(), str::to_string)
+}
+
+// =================================================================================================
+// Layered run overrides (07 §Configuration, §Run flags).
+//
+// The `--concurrency`/`--max-state-size` caps and the `local` default resolve through the full
+// documented precedence — `flag > TMX_CONCURRENCY|TMX_MAX_STATE_SIZE|TMX_NO_ENV > project > user >
+// system > built-in default` — with `--profile` selecting a project-config profile. The `tmx run`
+// path builds an [`EffectiveConfig`] with the flag values folded in as the highest layer, then reads
+// the resolved caps back through these resolvers. A present-but-malformed numeric value (an env var
+// or config key that is not a non-negative integer) is a **usage error** (07 §Exit codes: exit 2),
+// surfaced before the run starts rather than silently ignored.
+// =================================================================================================
+
+/// The layered run overrides the `tmx run` path resolves before executing (07 §Configuration): the
+/// `concurrency`/`max-state-size` caps (`None` = the engine default) and whether the run is `local`
+/// (no provider lifecycle) after folding `TMX_NO_ENV`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RunOverrides {
+    /// The resolved global `map`/`eval` fan-out concurrency cap, or `None` for the engine default.
+    pub concurrency: Option<u32>,
+    /// The resolved narrowed state-size cap in bytes, or `None` for the engine default.
+    pub max_state_size_bytes: Option<u64>,
+    /// Whether the run executes locally with no provider lifecycle (`--local`/`--no-env`/`TMX_NO_ENV`).
+    pub local: bool,
+}
+
+/// A malformed `TMX_*` / config numeric value — a usage error (07 §Exit codes: exit 2). Carried as a
+/// distinct type (not a core [`RunError`]) because exit 2 is CLI-local, not a core error category: the
+/// binary maps this straight to exit 2 the same way `clap` maps a bad flag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigUsageError {
+    /// The human-facing diagnostic naming the offending variable and value.
+    pub message: String,
+}
+
+impl std::fmt::Display for ConfigUsageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+/// Build a [`ConfigUsageError`] naming the source variable and the offending `value`.
+fn malformed_numeric(source: &str, value: &str) -> ConfigUsageError {
+    ConfigUsageError {
+        message: format!("{source} must be a non-negative integer, got {value:?}"),
+    }
+}
+
+/// Read a resolved config `key` as a `u64`, accepting either a JSON number (a config file) or a numeric
+/// string (a `TMX_*` env var). `Ok(None)` when no layer set it; `Err` (naming `source`) when a layer
+/// set it to a value that is not a non-negative integer, so a stray value is a usage error rather than
+/// a silent fall-back to the default.
+fn resolve_u64_key(
+    effective: &EffectiveConfig,
+    key: &str,
+    source: &str,
+) -> Result<Option<u64>, ConfigUsageError> {
+    match effective.get(key) {
+        None => Ok(None),
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| malformed_numeric(source, &number.to_string())),
+        Some(Value::String(text)) => text
+            .trim()
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|_| malformed_numeric(source, text)),
+        Some(other) => Err(malformed_numeric(source, &other.to_string())),
+    }
+}
+
+/// Resolve the effective `concurrency` cap as a `u32` from the layered config (`flag > TMX_CONCURRENCY
+/// > project > user > system`). `Ok(None)` leaves the engine ceiling as the only bound; a present
+/// value that is not a `u32` (non-numeric, negative, or beyond `u32`) is a usage error (exit 2). A
+/// value within `u32` but above the engine ceiling is *not* rejected here — the run's own
+/// `check_concurrency` maps that to a validation error (exit 3), keeping the two failure modes distinct.
+///
+/// # Errors
+///
+/// Returns [`ConfigUsageError`] when `TMX_CONCURRENCY` or a `concurrency` config key is set to a
+/// non-`u32` value.
+pub fn resolve_concurrency(effective: &EffectiveConfig) -> Result<Option<u32>, ConfigUsageError> {
+    let source = "TMX_CONCURRENCY / concurrency";
+    match resolve_u64_key(effective, "concurrency", source)? {
+        None => Ok(None),
+        Some(value) => u32::try_from(value)
+            .map(Some)
+            .map_err(|_| malformed_numeric(source, &value.to_string())),
+    }
+}
+
+/// Resolve the effective `maxStateSize` cap in bytes from the layered config (`flag >
+/// TMX_MAX_STATE_SIZE > project > user > system`). `Ok(None)` leaves the engine default; the runner
+/// clamps a resolved value to the hard `STATE_SIZE_MAX_BYTES` ceiling. A present non-integer value is
+/// a usage error (exit 2).
+///
+/// # Errors
+///
+/// Returns [`ConfigUsageError`] when `TMX_MAX_STATE_SIZE` or a `maxStateSize` config key is set to a
+/// non-integer value.
+pub fn resolve_max_state_size(
+    effective: &EffectiveConfig,
+) -> Result<Option<u64>, ConfigUsageError> {
+    resolve_u64_key(
+        effective,
+        "maxStateSize",
+        "TMX_MAX_STATE_SIZE / maxStateSize",
+    )
+}
+
+/// Resolve whether the run executes `local` (no provider lifecycle): the `--local`/`--no-env` flag, or
+/// `TMX_NO_ENV` present and non-empty (07 §Configuration). An explicit flag still wins — a set flag is
+/// `true` regardless of the env — so this only *adds* the env as an equivalent trigger.
+#[must_use]
+pub fn resolve_local(local_flag: bool) -> bool {
+    let env_no_env = std::env::var_os("TMX_NO_ENV").is_some_and(|value| !value.is_empty());
+    resolve_local_with(local_flag, env_no_env)
+}
+
+/// The env-free core of [`resolve_local`]: the flag OR the `TMX_NO_ENV` presence. Split out so the
+/// precedence is tested without touching process env.
+#[must_use]
+fn resolve_local_with(local_flag: bool, env_no_env: bool) -> bool {
+    local_flag || env_no_env
+}
+
+#[cfg(test)]
+mod run_override_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Build an [`EffectiveConfig`] from a single JSON-object layer.
+    fn effective(value: Value) -> EffectiveConfig {
+        let layer = value.as_object().cloned().expect("an object literal");
+        resolve_effective(&[layer])
+    }
+
+    #[test]
+    fn resolve_concurrency_reads_a_number_or_a_numeric_string_and_rejects_garbage() {
+        // A JSON number (a config file) and a numeric string (a TMX_* env var) both resolve.
+        assert_eq!(
+            resolve_concurrency(&effective(json!({ "concurrency": 4 })))
+                .expect("a numeric concurrency resolves"),
+            Some(4),
+            "a JSON number resolves to the cap"
+        );
+        assert_eq!(
+            resolve_concurrency(&effective(json!({ "concurrency": "8" })))
+                .expect("a numeric string resolves"),
+            Some(8),
+            "a numeric string (the env-var form) resolves to the cap"
+        );
+        // Absent → None (the engine ceiling is the only bound).
+        assert_eq!(
+            resolve_concurrency(&effective(json!({}))).expect("absent is Ok"),
+            None,
+            "no concurrency key leaves the cap unset"
+        );
+
+        // Negative space: a non-numeric value is a usage error, never a silent fall-back.
+        let err = resolve_concurrency(&effective(json!({ "concurrency": "lots" })))
+            .expect_err("a non-numeric concurrency is rejected");
+        assert!(
+            err.message.contains("TMX_CONCURRENCY"),
+            "the usage error names the source, got {:?}",
+            err.message
+        );
+        // A value beyond u32 is also a usage error, not a truncation.
+        assert!(
+            resolve_concurrency(&effective(json!({ "concurrency": 9_999_999_999_u64 }))).is_err(),
+            "a value beyond u32 is rejected, not truncated"
+        );
+    }
+
+    #[test]
+    fn resolve_max_state_size_reads_bytes_and_rejects_garbage() {
+        assert_eq!(
+            resolve_max_state_size(&effective(json!({ "maxStateSize": "1048576" })))
+                .expect("a byte count resolves"),
+            Some(1_048_576),
+            "a numeric string resolves to the byte cap"
+        );
+        assert_eq!(
+            resolve_max_state_size(&effective(json!({}))).expect("absent is Ok"),
+            None,
+            "no maxStateSize key leaves the cap at the engine default"
+        );
+
+        // Negative space: a malformed byte count is a usage error.
+        let err = resolve_max_state_size(&effective(json!({ "maxStateSize": "big" })))
+            .expect_err("a malformed byte count is rejected");
+        assert!(
+            err.message.contains("TMX_MAX_STATE_SIZE"),
+            "the usage error names the source, got {:?}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn resolve_concurrency_honours_the_layer_precedence() {
+        // flag (top layer) beats env beats project — the load-bearing precedence for the caps.
+        let flag_wins = resolve_effective(&[
+            json!({ "concurrency": 2 }).as_object().cloned().unwrap(),
+            json!({ "concurrency": "8" }).as_object().cloned().unwrap(),
+            json!({ "concurrency": "16" }).as_object().cloned().unwrap(),
+        ]);
+        assert_eq!(
+            resolve_concurrency(&flag_wins).expect("resolves"),
+            Some(2),
+            "the flag layer wins the concurrency cap"
+        );
+        let env_wins = resolve_effective(&[
+            ConfigLayer::new(),
+            json!({ "concurrency": "8" }).as_object().cloned().unwrap(),
+            json!({ "concurrency": "16" }).as_object().cloned().unwrap(),
+        ]);
+        assert_eq!(
+            resolve_concurrency(&env_wins).expect("resolves"),
+            Some(8),
+            "with no flag the env layer wins over the project"
+        );
+    }
+
+    #[test]
+    fn resolve_local_folds_the_flag_and_the_env() {
+        // The explicit flag wins; TMX_NO_ENV is an equivalent trigger; neither leaves local off.
+        assert!(
+            resolve_local_with(true, false),
+            "the --local flag forces local"
+        );
+        assert!(
+            resolve_local_with(false, true),
+            "TMX_NO_ENV alone triggers local"
+        );
+        assert!(
+            resolve_local_with(true, true),
+            "flag and env together still local"
+        );
+        assert!(
+            !resolve_local_with(false, false),
+            "neither flag nor env leaves the run non-local"
+        );
+    }
 }
 
 #[cfg(test)]

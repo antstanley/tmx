@@ -63,12 +63,51 @@ pub struct ResolvedTarget {
 /// limit (`validation`), a missing capability (`environment`), or any failure the run itself surfaces.
 /// A run that *completes* with a failed task returns `Ok` with a `failed`-status record — the failure
 /// is data on the record, mapped to exit 1 by `main`, not an `Err`.
-pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
+pub async fn execute(
+    args: RunArgs,
+    overrides: config::RunOverrides,
+) -> Result<RunRecord, RunError> {
     if args.watch {
-        watch(&args).await
+        watch(&args, &overrides).await
     } else {
-        run_once(&args).await
+        run_once(&args, &overrides).await
     }
+}
+
+/// Resolve the layered run overrides (07 §Configuration): the `concurrency`/`max-state-size` caps and
+/// the `local` default resolved through `flag > TMX_* env > project > user > system > built-in
+/// default`, with `--profile` selecting a project-config profile. Called once at startup, before the
+/// run begins, so a malformed `TMX_CONCURRENCY`/`TMX_MAX_STATE_SIZE` value is surfaced as a usage
+/// error (exit 2) up front rather than silently ignored. The config layers are read rooted at the cwd
+/// (the project root); when the cwd is unreadable the file layers are simply empty, and the run's own
+/// path surfaces the cwd failure.
+///
+/// # Errors
+///
+/// Returns [`config::ConfigUsageError`] when a numeric env var / config key is malformed.
+pub fn resolve_overrides(
+    args: &RunArgs,
+    profile: Option<&str>,
+) -> Result<config::RunOverrides, config::ConfigUsageError> {
+    let project_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    // The flags become the highest config layer, so an explicit `--concurrency`/`--max-state-size`/
+    // `--profile` wins over the `TMX_*` env and the config files, matching 07 §Configuration.
+    let mut flags = config::ConfigLayer::new();
+    if let Some(profile) = profile {
+        flags.insert("profile".to_string(), Value::String(profile.to_string()));
+    }
+    if let Some(concurrency) = args.concurrency {
+        flags.insert("concurrency".to_string(), Value::from(concurrency));
+    }
+    if let Some(max_state_size) = args.max_state_size {
+        flags.insert("maxStateSize".to_string(), Value::from(max_state_size));
+    }
+    let effective = config::load_effective(flags, &project_dir);
+    Ok(config::RunOverrides {
+        concurrency: config::resolve_concurrency(&effective)?,
+        max_state_size_bytes: config::resolve_max_state_size(&effective)?,
+        local: config::resolve_local(args.local),
+    })
 }
 
 /// Run the Flow once, end to end, honouring the full flag surface: coerced inputs, `--env` overrides,
@@ -83,7 +122,7 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
 /// Returns a [`RunError`] for an unresolved Flow, a malformed artifact, a coercion/validation failure
 /// of an input or a `--state-in` file, an unknown sliced task name, an over-wide matrix, a missing
 /// capability, or any failure the run itself surfaces.
-async fn run_once(args: &RunArgs) -> Result<RunRecord, RunError> {
+async fn run_once(args: &RunArgs, overrides: &config::RunOverrides) -> Result<RunRecord, RunError> {
     let cwd = std::env::current_dir().map_err(|e| {
         RunError::resolution(
             "cwd_unavailable",
@@ -134,24 +173,26 @@ async fn run_once(args: &RunArgs) -> Result<RunRecord, RunError> {
         eprintln!("warning: {}", warning.message);
     }
 
-    // `--concurrency` is the global cap for `map`/`eval` fan-out; a request above the engine ceiling is
-    // rejected up front (the same bound `run_map`/`run_eval` enforce), so the flag is validated at the
-    // boundary rather than silently accepted.
-    check_concurrency(args.concurrency)?;
+    // `--concurrency` is the global cap for `map`/`eval` fan-out, resolved through the layered config
+    // (`flag > TMX_CONCURRENCY > project/user/system`). A request above the engine ceiling is rejected
+    // up front (the same bound `run_map`/`run_eval` enforce), so the cap is validated at the boundary
+    // rather than silently accepted.
+    check_concurrency(overrides.concurrency)?;
 
     // The engine flags the run flags shape: `--continue-on-error` forces the global policy,
-    // `--check-produces` selects the `produces` mode (absent → Off), and `--max-state-size` narrows
-    // the state cap (clamped to the hard ceiling by the runner).
+    // `--check-produces` selects the `produces` mode (absent → Off), and the resolved `max-state-size`
+    // narrows the state cap (clamped to the hard ceiling by the runner).
     let config = RunConfig {
         continue_on_error: args.continue_on_error,
         check_produces: args
             .check_produces
             .map(crate::args::CheckProducesArg::to_check)
             .unwrap_or_default(),
-        max_state_size_bytes: args.max_state_size,
+        // The narrowed state-size cap resolved through `flag > TMX_MAX_STATE_SIZE > project/user/system`.
+        max_state_size_bytes: overrides.max_state_size_bytes,
         // The global `map`/`eval` fan-out ceiling: each fan-out task's own `concurrency` is clamped by
         // this. `None` leaves `CONCURRENCY_MAX` as the only bound.
-        concurrency_cap: args.concurrency,
+        concurrency_cap: overrides.concurrency,
     };
 
     // Prepare the flow from the run flags: coerce the supplied inputs to their declared `type`, apply
@@ -180,9 +221,10 @@ async fn run_once(args: &RunArgs) -> Result<RunRecord, RunError> {
     //   --no-deploy    →          run           (reuse a standing environment)
     //   --local        →          run           (no provider at all)
     // A provider method that fails is an `environment` error (exit 5), distinct from a run failure.
+    // `local` is the resolved `--local`/`--no-env`/`TMX_NO_ENV` default: no provider lifecycle at all.
     let environment = flow.environment.clone();
     let provider_loaded = match &environment {
-        Some(env) if !args.local && env.provider.is_some() => {
+        Some(env) if !overrides.local && env.provider.is_some() => {
             Some(load_provider(env, &composed).await?)
         }
         _ => None,
@@ -439,6 +481,22 @@ async fn run_flow_direct(
 /// error (negative space) rather than a silently mistyped input.
 fn coerce_inputs(args: &RunArgs, flow: &ResolvedFlow) -> Result<Value, RunError> {
     let mut supplied = serde_json::Map::new();
+
+    // Lowest precedence: `TMX_INPUT_<NAME>` for each *declared* input, coerced to its declared `type`
+    // (07 §Configuration). Only declared inputs are scanned, so an unrelated `TMX_INPUT_*` var is never
+    // bound. An explicit `--inputs-file` / `--input` below overrides an env-supplied value.
+    for name in flow.inputs.keys() {
+        let var = format!("TMX_INPUT_{}", name.to_ascii_uppercase());
+        match std::env::var(&var) {
+            Ok(raw) if !raw.is_empty() => {
+                supplied.insert(
+                    name.clone(),
+                    coerce_declared(name, Value::String(raw), flow)?,
+                );
+            }
+            _ => {}
+        }
+    }
 
     if let Some(path) = &args.inputs_file {
         let text = std::fs::read_to_string(path).map_err(|e| {
@@ -722,7 +780,7 @@ fn write_state_out(record: &RunRecord, path: &str) -> Result<(), RunError> {
 /// each re-run a full run with its own record (07 §Decisions: `--watch` runs are ordinary runs). The
 /// watcher polls the source modification times; a SIGINT stops it and the process exits with the most
 /// recent run's code. Returns the most recent run's [`RunRecord`].
-async fn watch(args: &RunArgs) -> Result<RunRecord, RunError> {
+async fn watch(args: &RunArgs, overrides: &config::RunOverrides) -> Result<RunRecord, RunError> {
     let cwd = std::env::current_dir().map_err(|e| {
         RunError::resolution(
             "cwd_unavailable",
@@ -733,7 +791,7 @@ async fn watch(args: &RunArgs) -> Result<RunRecord, RunError> {
     let watched = watched_paths(&resolved);
     let mut fingerprint = source_fingerprint(&watched);
 
-    let mut last = run_once(args).await;
+    let mut last = run_once(args, overrides).await;
     eprintln!("tmx: watching for changes… (Ctrl-C to stop)");
     loop {
         // Wait for either a source change (re-run) or a SIGINT (stop the watcher).
@@ -746,7 +804,7 @@ async fn watch(args: &RunArgs) -> Result<RunRecord, RunError> {
             break;
         }
         eprintln!("tmx: change detected, re-running");
-        last = run_once(args).await;
+        last = run_once(args, overrides).await;
     }
     last
 }

@@ -32,6 +32,11 @@ use crate::args::{Cli, Command};
 /// by [`exit_code`]. `0` is success; a completed-but-failed run is mapped by [`exit_for_status`].
 const EXIT_SUCCESS: i32 = 0;
 
+/// Exit code for a usage error (07 §Exit codes: unknown command, bad flag/argument) — CLI-local, not
+/// a core [`ErrorCategory`], so it is mapped here rather than by [`exit_code`]. `clap` emits it for a
+/// bad flag; the run path emits it for a malformed `TMX_*` numeric config value resolved before the run.
+const EXIT_USAGE: i32 = 2;
+
 fn main() {
     let cli = Cli::parse();
     // The process adapter awaits real tokio I/O, so the use cases run on a Tokio runtime built here.
@@ -49,19 +54,33 @@ fn main() {
 
     let Cli { command, profile } = cli;
     let code = match command {
-        Command::Run(run_args) => match runtime.block_on(commands::run::execute(run_args)) {
-            Ok(record) => {
-                // The run command already rendered the stdout machine data for the selected
-                // `--format` (the final-state object, the ndjson stream, or nothing for pretty); here
-                // we only map the terminal status to an exit code.
-                exit_for_status(record.status)
+        Command::Run(run_args) => {
+            // Resolve the layered run overrides first (the `--concurrency`/`--max-state-size` caps and
+            // the `local` default, resolved through `flag > TMX_* env > project/user/system config`,
+            // with the global `--profile` selecting a layer). A malformed `TMX_*` numeric value is a
+            // usage error (exit 2), surfaced before the run starts rather than silently ignored.
+            match commands::run::resolve_overrides(&run_args, profile.as_deref()) {
+                Ok(overrides) => {
+                    match runtime.block_on(commands::run::execute(run_args, overrides)) {
+                        Ok(record) => {
+                            // The run command already rendered the stdout machine data for the selected
+                            // `--format` (the final-state object, the ndjson stream, or nothing for
+                            // pretty); here we only map the terminal status to an exit code.
+                            exit_for_status(record.status)
+                        }
+                        Err(error) => {
+                            // Human-facing error on stderr; stdout stays empty so `| jq` sees no data.
+                            eprintln!("tmx: {error}");
+                            exit_code(&error)
+                        }
+                    }
+                }
+                Err(usage) => {
+                    eprintln!("tmx: {usage}");
+                    EXIT_USAGE
+                }
             }
-            Err(error) => {
-                // Human-facing error on stderr; stdout stays empty so a `| jq` pipeline sees no data.
-                eprintln!("tmx: {error}");
-                exit_code(&error)
-            }
-        },
+        }
         Command::Lint(lint_args) => match runtime.block_on(commands::lint::execute(lint_args)) {
             Ok(report) => {
                 // Findings are human-facing progress on stderr; stdout stays empty (lint produces no

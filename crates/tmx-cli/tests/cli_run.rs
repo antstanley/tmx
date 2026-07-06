@@ -587,11 +587,19 @@ fn a_secret_is_redacted_under_every_format() {
 
 /// Run the binary with arbitrary `args` from working directory `cwd`, capturing the result.
 fn run_binary(cwd: &Path, args: &[&str]) -> Output {
-    let output = Command::new(env!("CARGO_BIN_EXE_tmx"))
-        .current_dir(cwd)
-        .args(args)
-        .output()
-        .expect("the tmx binary runs");
+    run_binary_env(cwd, args, &[])
+}
+
+/// Run the binary with arbitrary `args` and extra `env` vars from working directory `cwd`. The
+/// task-34 config/env tests drive the layered-config precedence (`TMX_CONCURRENCY`, `TMX_NO_ENV`,
+/// `TMX_INPUT_<NAME>`, `--profile`) through the real binary, so each var is set on the child process.
+fn run_binary_env(cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tmx"));
+    command.current_dir(cwd).args(args);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command.output().expect("the tmx binary runs");
     Output {
         code: output.status.code(),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -894,6 +902,243 @@ fn state_out_dumps_the_final_state_for_a_later_state_in() {
     assert!(
         dumped.get("build").is_some(),
         "the dumped state carries the build task's output, got {dumped:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// =====================================================================================
+// Task 34 — layered config + env bind `tmx run` (07 §Configuration): the `TMX_CONCURRENCY`/
+// `TMX_MAX_STATE_SIZE`/project-config/`--profile` caps, `TMX_NO_ENV`, and `TMX_INPUT_<NAME>`.
+// =====================================================================================
+
+const ECHO_INPUT_YAML: &str = r#"name: inp
+inputs:
+  foo:
+    type: string
+tasks:
+  - name: echo
+    type: exec
+    with:
+      command: "printf %s '${{ inputs.foo }}'"
+"#;
+
+#[test]
+fn tmx_input_env_reaches_state_and_an_explicit_input_overrides_it() {
+    // O2: `TMX_INPUT_FOO=bar` supplies the declared `foo` input, reaching state as `${{ inputs.foo }}`;
+    // an explicit `--input foo=baz` outranks the env value.
+    let dir = temp_dir("tmx-input");
+    let flow = write(&dir, "flow.yaml", ECHO_INPUT_YAML);
+    let flow_arg = flow.to_str().expect("utf8 path");
+
+    // The env var supplies the input.
+    let from_env = run_binary_env(
+        &dir,
+        &["run", flow_arg, "--no-store"],
+        &[("TMX_INPUT_FOO", "bar")],
+    );
+    assert_eq!(
+        from_env.code,
+        Some(0),
+        "the env-supplied input runs; stderr: {}",
+        from_env.stderr
+    );
+    let state: Value = serde_json::from_str(from_env.stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is JSON: {e}"));
+    assert_eq!(
+        state["echo"]["message"], "bar",
+        "TMX_INPUT_FOO reached state as ${{ inputs.foo }}, got {state:?}"
+    );
+
+    // An explicit --input outranks the env value.
+    let overridden = run_binary_env(
+        &dir,
+        &["run", flow_arg, "--no-store", "--input", "foo=baz"],
+        &[("TMX_INPUT_FOO", "bar")],
+    );
+    assert_eq!(
+        overridden.code,
+        Some(0),
+        "the overriding run exits 0; stderr: {}",
+        overridden.stderr
+    );
+    let state: Value = serde_json::from_str(overridden.stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is JSON: {e}"));
+    assert_eq!(
+        state["echo"]["message"], "baz",
+        "an explicit --input outranks TMX_INPUT_FOO, got {state:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+const PROVIDER_LOCAL_YAML: &str = r#"name: prov
+environment:
+  provider: ./no-such-provider.yaml
+tasks:
+  - name: work
+    type: exec
+    with:
+      command: printf done
+"#;
+
+#[test]
+fn tmx_no_env_suppresses_the_provider_lifecycle_as_local_does() {
+    // O2: a Flow declares an `environment.provider` that does not resolve. A bare run tries to load it
+    // and fails (non-zero); `TMX_NO_ENV` (like `--local`) skips the provider entirely, so the task runs
+    // and the run exits 0 — the env var is the parity of the `--no-env` flag.
+    let dir = temp_dir("tmx-no-env");
+    let flow = write(&dir, "flow.yaml", PROVIDER_LOCAL_YAML);
+    let flow_arg = flow.to_str().expect("utf8 path");
+
+    // Bare run: the missing provider is loaded and fails — a non-zero exit.
+    let bare = run_binary(&dir, &["run", flow_arg, "--no-store"]);
+    assert_ne!(
+        bare.code,
+        Some(0),
+        "a missing provider fails a non-local run; stderr: {}",
+        bare.stderr
+    );
+
+    // TMX_NO_ENV skips the provider lifecycle, so the task runs to completion.
+    let no_env = run_binary_env(
+        &dir,
+        &["run", flow_arg, "--no-store"],
+        &[("TMX_NO_ENV", "1")],
+    );
+    assert_eq!(
+        no_env.code,
+        Some(0),
+        "TMX_NO_ENV skips the provider and the task runs; stderr: {}",
+        no_env.stderr
+    );
+    let state: Value = serde_json::from_str(no_env.stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is JSON: {e}"));
+    assert_eq!(
+        state["work"]["message"], "done",
+        "the task ran with the provider suppressed, got {state:?}"
+    );
+
+    // The explicit --local flag has the same effect — the baseline the env var mirrors.
+    let local = run_binary(&dir, &["run", flow_arg, "--no-store", "--local"]);
+    assert_eq!(
+        local.code,
+        Some(0),
+        "--local also skips the provider; stderr: {}",
+        local.stderr
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_malformed_numeric_env_value_is_a_usage_error_exit_two() {
+    // O3 (negative space): a malformed `TMX_CONCURRENCY`/`TMX_MAX_STATE_SIZE` is a usage error (exit 2),
+    // surfaced before the run — never silently ignored. A well-formed value runs normally (exit 0).
+    let dir = temp_dir("tmx-bad-num");
+    let flow = write(&dir, "flow.yaml", PASSING_YAML);
+    let flow_arg = flow.to_str().expect("utf8 path");
+
+    let bad_concurrency = run_binary_env(
+        &dir,
+        &["run", flow_arg, "--no-store"],
+        &[("TMX_CONCURRENCY", "x")],
+    );
+    assert_eq!(
+        bad_concurrency.code,
+        Some(2),
+        "a non-numeric TMX_CONCURRENCY is a usage error (exit 2); stderr: {}",
+        bad_concurrency.stderr
+    );
+    assert!(
+        bad_concurrency.stdout.trim().is_empty(),
+        "no machine data on stdout for a usage error, got {:?}",
+        bad_concurrency.stdout
+    );
+
+    let bad_state_size = run_binary_env(
+        &dir,
+        &["run", flow_arg, "--no-store"],
+        &[("TMX_MAX_STATE_SIZE", "big")],
+    );
+    assert_eq!(
+        bad_state_size.code,
+        Some(2),
+        "a non-numeric TMX_MAX_STATE_SIZE is a usage error (exit 2); stderr: {}",
+        bad_state_size.stderr
+    );
+
+    // A well-formed value is honoured, not rejected — proving exit 2 is the malformed path, not blanket.
+    let ok = run_binary_env(
+        &dir,
+        &["run", flow_arg, "--no-store"],
+        &[("TMX_CONCURRENCY", "2")],
+    );
+    assert_eq!(
+        ok.code,
+        Some(0),
+        "a well-formed TMX_CONCURRENCY runs normally; stderr: {}",
+        ok.stderr
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn concurrency_precedence_flag_beats_env_beats_profile_beats_project() {
+    // O1: a project `tmx.config.json` sets a malformed base `concurrency`, and a named profile a valid
+    // one. The bare run consults the project layer and fails (exit 2). A `--concurrency` flag, a
+    // `TMX_CONCURRENCY` env var, and `--profile ok` each override the bad base and run (exit 0) — the
+    // documented `flag > env > profile/project` precedence, observed end to end.
+    let dir = temp_dir("cfg-precedence");
+    let flow = write(&dir, "flow.yaml", PASSING_YAML);
+    let flow_arg = flow.to_str().expect("utf8 path");
+    // The base project concurrency is malformed; the `ok` profile overrides it with a valid value.
+    write(
+        &dir,
+        "tmx.config.json",
+        r#"{ "concurrency": "lots", "profiles": { "ok": { "concurrency": "4" } } }"#,
+    );
+
+    // Bare: the project layer's malformed concurrency is a usage error (exit 2) — proving the layer is
+    // consulted for the run, not just for `tmx list`.
+    let bare = run_binary(&dir, &["run", flow_arg, "--no-store"]);
+    assert_eq!(
+        bare.code,
+        Some(2),
+        "the project-config concurrency binds the run (malformed → exit 2); stderr: {}",
+        bare.stderr
+    );
+
+    // The flag outranks the project layer.
+    let by_flag = run_binary(&dir, &["run", flow_arg, "--no-store", "--concurrency", "4"]);
+    assert_eq!(
+        by_flag.code,
+        Some(0),
+        "an explicit --concurrency outranks the project layer; stderr: {}",
+        by_flag.stderr
+    );
+
+    // The env var outranks the project layer.
+    let by_env = run_binary_env(
+        &dir,
+        &["run", flow_arg, "--no-store"],
+        &[("TMX_CONCURRENCY", "4")],
+    );
+    assert_eq!(
+        by_env.code,
+        Some(0),
+        "TMX_CONCURRENCY outranks the project layer; stderr: {}",
+        by_env.stderr
+    );
+
+    // The selected profile's concurrency outranks the base project layer.
+    let by_profile = run_binary(&dir, &["--profile", "ok", "run", flow_arg, "--no-store"]);
+    assert_eq!(
+        by_profile.code,
+        Some(0),
+        "--profile ok selects the profile's valid concurrency over the bad base; stderr: {}",
+        by_profile.stderr
     );
 
     std::fs::remove_dir_all(&dir).ok();
