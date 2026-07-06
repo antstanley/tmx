@@ -24,6 +24,7 @@ use tmx_schema::limits::{
     EXPR_DEPTH_MAX, EXPR_LEN_MAX_BYTES, FANOUT_WIDTH_MAX, FLOW_DEPTH_MAX, JSON_DEPTH_MAX,
     STATE_SIZE_MAX_BYTES, TASKS_PER_FLOW_MAX,
 };
+use tmx_testkit::SerialScheduler;
 
 const A_RUN_ID: &str = "018f8c7e-9b2a-7def-8123-456789abcdef";
 
@@ -200,11 +201,13 @@ fn run_flow_task_at_depth(depth: u32) -> (RunStatus, Option<String>) {
     let mut masker = Masker::new();
     let mut secrets = Vec::new();
     let runner = PipelineRunner::new(RunConfig::default());
+    let scheduler = SerialScheduler::new();
     let outcome = block_on_ready(runner.run(
         &id,
         &parent,
         &json!({}),
         bundle.ports(),
+        &scheduler,
         &mut masker,
         &mut secrets,
         None,
@@ -278,11 +281,13 @@ fn run_n_assert_tasks(n: u32) -> Result<RunStatus, tmx_core::RunError> {
     let mut masker = Masker::new();
     let mut secrets = Vec::new();
     let runner = PipelineRunner::new(RunConfig::default());
+    let scheduler = SerialScheduler::new();
     block_on_ready(runner.run(
         &id,
         &flow,
         &json!({}),
         bundle.ports(),
+        &scheduler,
         &mut masker,
         &mut secrets,
         None,

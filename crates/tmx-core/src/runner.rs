@@ -23,12 +23,13 @@ use serde_json::Value;
 use tmx_schema::EnvMap;
 use tmx_schema::context::{Context, SecretValue};
 use tmx_schema::flow::ContextRef;
-use tmx_schema::limits::{FANOUT_WIDTH_MAX, FLOW_DEPTH_MAX, TASKS_PER_FLOW_MAX};
-use tmx_schema::task::{FlowWith, Task, TaskWith};
+use tmx_schema::limits::{CONCURRENCY_MAX, FANOUT_WIDTH_MAX, FLOW_DEPTH_MAX, TASKS_PER_FLOW_MAX};
+use tmx_schema::task::{EvalWith, FlowWith, MapWith, Task, TaskWith};
 
 use crate::cancel::{CancelReason, CancelToken};
 use crate::dispatch::{Dispatch, dispatch_task, interp_template, interp_value, is_truthy};
 use crate::error::RunError;
+use crate::fanout::{run_eval, run_map};
 use crate::hooks::{HookKind, HookRunner};
 use crate::interpolate::evaluate;
 use crate::mask::Masker;
@@ -39,7 +40,7 @@ use crate::model::{
 };
 use crate::ports::driven::{
     ChatModel, Clock, EventSink, FileSystem, HttpClient, ObjectStore, ProcessRunner,
-    ReferenceResolver, SchemaValidator, SecretResolver, SourceLoader,
+    ReferenceResolver, Scheduler, SchemaValidator, SecretResolver, SourceLoader,
 };
 use crate::resolve::{merged_inputs, resolve_flow};
 
@@ -106,6 +107,11 @@ pub struct RunConfig {
     ///
     /// [`STATE_SIZE_MAX_BYTES`]: tmx_schema::limits::STATE_SIZE_MAX_BYTES
     pub max_state_size_bytes: Option<u64>,
+    /// The run's global `map`/`eval` fan-out concurrency ceiling (the `--concurrency` flag): every
+    /// fan-out task's own `concurrency` is further clamped by this. `None` leaves the engine ceiling
+    /// [`CONCURRENCY_MAX`](tmx_schema::limits::CONCURRENCY_MAX) as the only bound, so a fan-out task's
+    /// `concurrency` governs exactly as before this flag existed.
+    pub concurrency_cap: Option<u32>,
 }
 
 /// The bounded sequential task loop.
@@ -217,12 +223,13 @@ impl PipelineRunner {
     /// pre-flight abort (a missing/duplicate task name, too many tasks, an unsupported reference) and
     /// for an output-port write failure.
     #[allow(clippy::too_many_arguments)] // a run is defined by exactly these collaborators; a bag struct would only hide them
-    pub async fn run(
+    pub async fn run<S: Scheduler>(
         &self,
         id: &RunId,
         flow: &ResolvedFlow,
         inputs: &Value,
         ports: Ports<'_>,
+        scheduler: &S,
         masker: &mut Masker,
         resolved_secrets: &mut Vec<String>,
         seed: Option<&PipelineState>,
@@ -259,6 +266,7 @@ impl PipelineRunner {
                 id,
                 inputs,
                 ports,
+                scheduler,
                 masker,
                 resolved_secrets,
                 depth,
@@ -271,6 +279,7 @@ impl PipelineRunner {
                 flow,
                 inputs,
                 ports,
+                scheduler,
                 masker,
                 resolved_secrets,
                 seed,
@@ -307,6 +316,7 @@ impl PipelineRunner {
                     id,
                     inputs,
                     teardown_ports,
+                    scheduler,
                     masker,
                     resolved_secrets,
                     depth,
@@ -321,6 +331,7 @@ impl PipelineRunner {
                 id,
                 inputs,
                 teardown_ports,
+                scheduler,
                 masker,
                 resolved_secrets,
                 depth,
@@ -362,12 +373,13 @@ impl PipelineRunner {
     /// fires the `change` hook; it is `None` for a sub-flow's loop and for a hook body, so `change`
     /// fires once per state-changing task of the Pipeline and never per sub-flow or per hook task.
     #[allow(clippy::too_many_arguments)] // mirrors `run`'s collaborators; threaded through the recursion
-    pub(crate) fn run_tasks<'a>(
+    pub(crate) fn run_tasks<'a, S: Scheduler>(
         &'a self,
         id: &'a RunId,
         flow: &'a ResolvedFlow,
         inputs: &'a Value,
         ports: Ports<'a>,
+        scheduler: &'a S,
         masker: &'a mut Masker,
         resolved_secrets: &'a mut Vec<String>,
         seed: Option<&'a PipelineState>,
@@ -437,6 +449,7 @@ impl PipelineRunner {
                         inputs,
                         builder.as_value(),
                         ports,
+                        scheduler,
                         masker,
                         resolved_secrets,
                         depth,
@@ -510,6 +523,7 @@ impl PipelineRunner {
                                             id,
                                             inputs,
                                             ports,
+                                            scheduler,
                                             masker,
                                             resolved_secrets,
                                             depth,
@@ -614,7 +628,7 @@ impl PipelineRunner {
     /// Run one task through its lifecycle up to (but not including) the merge: gate, resolve context
     /// and secrets, emit `task.start`, dispatch, normalise, and check `produces`.
     #[allow(clippy::too_many_arguments)] // the step's collaborators; a bag struct would only hide them
-    async fn run_step(
+    async fn run_step<S: Scheduler>(
         &self,
         id: &RunId,
         task: &Task,
@@ -623,6 +637,7 @@ impl PipelineRunner {
         inputs: &Value,
         state: &Value,
         ports: Ports<'_>,
+        scheduler: &S,
         masker: &mut Masker,
         resolved_secrets: &mut Vec<String>,
         depth: u32,
@@ -690,8 +705,58 @@ impl PipelineRunner {
             }
             Dispatch::Flow(fw) => {
                 let output = self
-                    .run_subflow(id, fw, &scope, ports, masker, resolved_secrets, depth)
+                    .run_subflow(
+                        id,
+                        fw,
+                        &scope,
+                        ports,
+                        scheduler,
+                        masker,
+                        resolved_secrets,
+                        depth,
+                    )
                     .await?;
+                Ok(StepOutcome::Produced(output))
+            }
+            Dispatch::Map(mw) => {
+                // The fan-out callback is `Fn` (shared, possibly concurrent), so it cannot borrow the
+                // masker mutably: the map task's own secrets are already resolved and registered above,
+                // and the inner task runs under the parent scope's already-bound secrets (a flow inner
+                // task masks its own newly-resolved secrets locally). Hand the callback immutable
+                // borrows for event emission and route to `run_map`.
+                let output = self
+                    .run_map_task(
+                        id,
+                        mw,
+                        name,
+                        &scope,
+                        ports,
+                        scheduler,
+                        masker,
+                        resolved_secrets,
+                        &ctx_env,
+                        depth,
+                    )
+                    .await?;
+                self.check_produces(task, &output, ports, name)?;
+                Ok(StepOutcome::Produced(output))
+            }
+            Dispatch::Eval(ew) => {
+                let output = self
+                    .run_eval_task(
+                        id,
+                        ew,
+                        name,
+                        &scope,
+                        ports,
+                        scheduler,
+                        masker,
+                        resolved_secrets,
+                        &ctx_env,
+                        depth,
+                    )
+                    .await?;
+                self.check_produces(task, &output, ports, name)?;
                 Ok(StepOutcome::Produced(output))
             }
         }
@@ -701,12 +766,13 @@ impl PipelineRunner {
     /// and return its final state as this task's output. The depth guard already passed in
     /// [`dispatch_task`]; the assertion here is the backstop.
     #[allow(clippy::too_many_arguments)] // recursion collaborators; threaded through the loop
-    async fn run_subflow(
+    async fn run_subflow<S: Scheduler>(
         &self,
         id: &RunId,
         fw: &FlowWith,
         scope: &Scope<'_>,
         ports: Ports<'_>,
+        scheduler: &S,
         masker: &mut Masker,
         resolved_secrets: &mut Vec<String>,
         depth: u32,
@@ -737,6 +803,7 @@ impl PipelineRunner {
                 &sub_flow,
                 &merged,
                 ports,
+                scheduler,
                 masker,
                 resolved_secrets,
                 None,
@@ -754,6 +821,249 @@ impl PipelineRunner {
             return Err(failure);
         }
         Ok(outcome.pipeline.state.into_value())
+    }
+
+    /// Fan a `map` task out over its `items` through the injected [`Scheduler`], collecting the
+    /// per-item outputs into an array in item order and emitting a `map.item.finish` per element.
+    ///
+    /// The inner task runs once per element under the parent `scope` with the element bound as
+    /// `${{ item.* }}`, at the map task's own recursion `depth` (a `flow` inner task recurses one level
+    /// deeper, guarded by [`run_map`] before any element runs). Every `run_map` guard
+    /// (`fanout_too_wide`, `concurrency_too_high`, `map_items_not_array`, `flow_depth_exceeded`)
+    /// surfaces unchanged through this seam.
+    #[allow(clippy::too_many_arguments)] // the fan-out collaborators; threaded from the step
+    async fn run_map_task<S: Scheduler>(
+        &self,
+        id: &RunId,
+        map: &MapWith,
+        name: &str,
+        scope: &Scope<'_>,
+        ports: Ports<'_>,
+        scheduler: &S,
+        masker: &Masker,
+        resolved_secrets: &[String],
+        ctx_env: &EnvMap,
+        depth: u32,
+    ) -> Result<Value, RunError> {
+        let cap = self.config.concurrency_cap.unwrap_or(CONCURRENCY_MAX);
+        let inner = &map.task;
+        let inner_name = inner.name.as_deref().unwrap_or(name);
+        run_map(
+            map,
+            name,
+            scope,
+            scheduler,
+            cap,
+            depth,
+            |index, element, _item_depth| async move {
+                let start_ms = ports.clock.now_ms();
+                let item_scope = Scope {
+                    item: Some(&element),
+                    ..*scope
+                };
+                let result = self
+                    .run_inner_task(
+                        id,
+                        inner,
+                        inner_name,
+                        &item_scope,
+                        ports,
+                        scheduler,
+                        masker,
+                        resolved_secrets,
+                        ctx_env,
+                        depth,
+                    )
+                    .await;
+                // Emit `map.item.finish` even when the element failed (its error is recorded in-slot by
+                // `run_map` under `continueOnError`, or aborts the map otherwise) so the element
+                // boundary is always visible on the stream.
+                let ms = Milliseconds(ports.clock.now_ms().0.saturating_sub(start_ms.0));
+                emit_event(
+                    ports,
+                    masker,
+                    resolved_secrets,
+                    Event::MapItemFinish {
+                        name: name.to_string(),
+                        index,
+                        ms,
+                    },
+                )
+                .await?;
+                result
+            },
+        )
+        .await
+    }
+
+    /// Fan an `eval` task out over its `dataset` through the injected [`Scheduler`], returning the
+    /// [`Scorecard`](crate::model::Scorecard) as a JSON value and emitting an `eval.case.finish` per
+    /// scored case.
+    ///
+    /// The `subject` (when present) runs once per case with the case bound as `${{ case }}`; its output
+    /// is what the scorers grade (`${{ output }}`). Every `run_eval` guard and the `threshold` gate
+    /// (`eval_threshold_missed`) surface unchanged through this seam.
+    #[allow(clippy::too_many_arguments)] // the fan-out collaborators; threaded from the step
+    async fn run_eval_task<S: Scheduler>(
+        &self,
+        id: &RunId,
+        eval: &EvalWith,
+        name: &str,
+        scope: &Scope<'_>,
+        ports: Ports<'_>,
+        scheduler: &S,
+        masker: &Masker,
+        resolved_secrets: &[String],
+        ctx_env: &EnvMap,
+        depth: u32,
+    ) -> Result<Value, RunError> {
+        let cap = self.config.concurrency_cap.unwrap_or(CONCURRENCY_MAX);
+        let subject = eval.subject.as_ref();
+        let subject_name = subject.and_then(|s| s.name.as_deref()).unwrap_or(name);
+        let scorecard = run_eval(
+            eval,
+            name,
+            scope,
+            scheduler,
+            ports.chat,
+            ports.process,
+            cap,
+            depth,
+            |_index, case, _item_depth| async move {
+                // `run_eval` invokes this only when a subject is present; run it once per case with the
+                // case bound as `${{ case }}`, at the eval task's own recursion depth.
+                let case_scope = Scope {
+                    case: Some(&case),
+                    ..*scope
+                };
+                match subject {
+                    Some(subject) => {
+                        self.run_inner_task(
+                            id,
+                            subject,
+                            subject_name,
+                            &case_scope,
+                            ports,
+                            scheduler,
+                            masker,
+                            resolved_secrets,
+                            ctx_env,
+                            depth,
+                        )
+                        .await
+                    }
+                    None => Ok(Value::Null),
+                }
+            },
+        )
+        .await?;
+        // `eval.case.finish` carries no duration, so it is emitted once per scored case after the
+        // scorecard is built — this also covers a subject-less eval, whose callback never runs.
+        let cases = scorecard
+            .get("cases")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        for index in 0..cases {
+            emit_event(
+                ports,
+                masker,
+                resolved_secrets,
+                Event::EvalCaseFinish {
+                    name: name.to_string(),
+                    index: index as u32,
+                },
+            )
+            .await?;
+        }
+        Ok(scorecard)
+    }
+
+    /// Run one `map`/`eval` inner task (the element task, or the eval `subject`) under `scope`, at
+    /// recursion `depth`, returning its normalised output value.
+    ///
+    /// A leaf inner task crosses its driven port through [`dispatch_task`]; a `flow` inner task recurses
+    /// through [`run_subflow`] against a fresh, secrets-seeded masker (the `Fn` fan-out callback cannot
+    /// borrow the run masker mutably, so a sub-flow masks its own newly-resolved secrets locally and its
+    /// output is scrubbed before merge); a nested `map`/`eval` inner task recurses through this unit's
+    /// own fan-out seams.
+    ///
+    /// Returns a type-erased boxed future: the fan-out seams (`run_map_task` → `run_map` → this
+    /// callback → nested fan-out) are mutually recursive `async fn`s, so erasing this one future's type
+    /// breaks the otherwise-infinite opaque-type cycle — the same discipline [`run_tasks`] uses for
+    /// `flow` recursion.
+    #[allow(clippy::too_many_arguments)] // the inner-task collaborators; threaded from the fan-out
+    fn run_inner_task<'a, S: Scheduler>(
+        &'a self,
+        id: &'a RunId,
+        inner: &'a Task,
+        inner_name: &'a str,
+        scope: &'a Scope<'a>,
+        ports: Ports<'a>,
+        scheduler: &'a S,
+        masker: &'a Masker,
+        resolved_secrets: &'a [String],
+        ctx_env: &'a EnvMap,
+        depth: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, RunError>> + Send + 'a>> {
+        Box::pin(async move {
+            match dispatch_task(inner, inner_name, scope, ports, ctx_env, depth).await? {
+                Dispatch::Leaf(adapter) => Ok(normalize_output(adapter)),
+                Dispatch::Flow(fw) => {
+                    // Seed a fresh masker with the run's already-resolved secrets so the sub-flow's
+                    // events mask correctly; scrub its output with that same masker before it is merged,
+                    // so a secret the sub-flow resolves never leaks into the parent state (the parent
+                    // masker re-scrubs idempotently at run end).
+                    let mut sub_masker = Masker::new();
+                    for secret in resolved_secrets {
+                        sub_masker.register(secret.clone());
+                    }
+                    let mut sub_secrets = resolved_secrets.to_vec();
+                    let state = self
+                        .run_subflow(
+                            id,
+                            fw,
+                            scope,
+                            ports,
+                            scheduler,
+                            &mut sub_masker,
+                            &mut sub_secrets,
+                            depth,
+                        )
+                        .await?;
+                    Ok(sub_masker.redact_value(&state).into_inner().into_owned())
+                }
+                Dispatch::Map(mw) => {
+                    self.run_map_task(
+                        id,
+                        mw,
+                        inner_name,
+                        scope,
+                        ports,
+                        scheduler,
+                        masker,
+                        resolved_secrets,
+                        ctx_env,
+                        depth,
+                    )
+                    .await
+                }
+                Dispatch::Eval(ew) => {
+                    self.run_eval_task(
+                        id,
+                        ew,
+                        inner_name,
+                        scope,
+                        ports,
+                        scheduler,
+                        masker,
+                        resolved_secrets,
+                        ctx_env,
+                        depth,
+                    )
+                    .await
+                }
+            }
+        })
     }
 
     /// The `produces` conformance seam (04 §`produces` conformance). Off by default — it does not run

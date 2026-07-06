@@ -121,6 +121,7 @@ fn a_too_deep_flow_recursion_is_flow_depth_exceeded() {
     let mut masker = Masker::new();
     let mut secrets = Vec::new();
     let runner = PipelineRunner::new(RunConfig::default());
+    let scheduler = tmx_testkit::SerialScheduler::new();
     // Start at the ceiling: the single flow task's guard sees depth + 1 > FLOW_DEPTH_MAX.
     let ceiling = tmx_schema::limits::FLOW_DEPTH_MAX;
     let outcome = block_on_ready(runner.run(
@@ -128,6 +129,7 @@ fn a_too_deep_flow_recursion_is_flow_depth_exceeded() {
         &flow,
         &json!({}),
         bundle.ports(),
+        &scheduler,
         &mut masker,
         &mut secrets,
         None,
@@ -181,11 +183,13 @@ fn a_duplicate_task_name_is_rejected_before_any_task_runs() {
     let mut masker = Masker::new();
     let mut secrets = Vec::new();
     let runner = PipelineRunner::new(RunConfig::default());
+    let scheduler = tmx_testkit::SerialScheduler::new();
     let err = block_on_ready(runner.run(
         &id,
         &flow,
         &json!({}),
         bundle.ports(),
+        &scheduler,
         &mut masker,
         &mut secrets,
         None,

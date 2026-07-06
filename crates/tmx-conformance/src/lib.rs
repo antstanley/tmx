@@ -34,7 +34,7 @@ use tmx_core::{
 use tmx_testkit::{
     FakeChatModel, FakeHttpClient, FakeReferenceResolver, FakeSchemaValidator, FakeSecretResolver,
     FakeSourceLoader, FixedClock, MemFileSystem, MemObjectStore, RecordingEventSink,
-    RecordingProcessRunner, SeededIdGenerator,
+    RecordingProcessRunner, SeededIdGenerator, SerialScheduler,
 };
 
 /// Drive an immediately-ready future to completion with a no-op waker — the workspace's
@@ -174,7 +174,8 @@ pub fn run_engine_with_config(
     inputs: Value,
     config: RunConfig,
 ) -> Result<RunRecord, RunError> {
-    let use_case = EngineRunFlow::new(bundle.ports(), &bundle.ids, config);
+    let scheduler = SerialScheduler::new();
+    let use_case = EngineRunFlow::new(bundle.ports(), &bundle.ids, &scheduler, config);
     block_on_ready(use_case.run(reference, inputs, RunOptions::default()))
 }
 

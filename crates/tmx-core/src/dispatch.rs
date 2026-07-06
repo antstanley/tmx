@@ -6,8 +6,9 @@
 //! (`exec`/`run`/`fetch`/`file`/`store`/`chat-completion`) are routed to their driven ports, and a
 //! `flow` task is handed back to the runner to recurse into — guarded first by the
 //! [`FLOW_DEPTH_MAX`](tmx_schema::limits::FLOW_DEPTH_MAX) bound so a too-deep nest is a typed
-//! `flow_depth_exceeded` [`RunError`] *before* any recursion. `map`/`eval` fan-out is a separate
-//! engine unit (05) and returns a typed error here rather than silently doing nothing.
+//! `flow_depth_exceeded` [`RunError`] *before* any recursion. `map`/`eval` are the fan-out
+//! control-flow types (05): the dispatcher classifies them into [`Dispatch::Map`]/[`Dispatch::Eval`]
+//! and the runner drives them over the injected [`Scheduler`](crate::ports::driven::Scheduler).
 //!
 //! The match has **no `_` wildcard**: adding a variant to the closed Task-03 enum forces a
 //! non-exhaustive-match compile error here, so the dispatch table can never drift from the vocabulary.
@@ -21,8 +22,8 @@ use indexmap::IndexMap;
 use serde_json::Value;
 use tmx_schema::limits::FLOW_DEPTH_MAX;
 use tmx_schema::task::{
-    AssertWith, ChatCompletionWith, Duration, ExecWith, FetchWith, FileWith, FlowWith, RunWith,
-    StoreWith, Task, TaskWith,
+    AssertWith, ChatCompletionWith, Duration, EvalWith, ExecWith, FetchWith, FileWith, FlowWith,
+    MapWith, RunWith, StoreWith, Task, TaskWith,
 };
 use tmx_schema::{EnvMap, MatcherName};
 
@@ -44,26 +45,33 @@ const MILLISECONDS_PER_MINUTE: u64 = 60 * MILLISECONDS_PER_SECOND;
 /// Milliseconds per hour.
 const MILLISECONDS_PER_HOUR: u64 = 60 * MILLISECONDS_PER_MINUTE;
 
-/// What a single [`dispatch_task`] resolved to: either a leaf task's normalised-ready output, or a
-/// `flow` task the runner must recurse into.
+/// What a single [`dispatch_task`] resolved to: a leaf task's normalised-ready output, a `flow` task
+/// the runner must recurse into, or a `map`/`eval` fan-out the runner must orchestrate over the
+/// injected [`Scheduler`](crate::ports::driven::Scheduler).
 ///
-/// Splitting `flow` back out (rather than recursing inside the dispatcher) keeps this unit free of
-/// the runner's loop while still owning the depth guard: a `flow` variant is only returned once
-/// `depth + 1 ≤ FLOW_DEPTH_MAX` holds.
+/// Splitting the control-flow types (`flow`/`map`/`eval`) back out — rather than executing them inside
+/// the dispatcher — keeps this unit free of the runner's loop and the concurrency port while still
+/// owning the depth guard: a `flow` variant is only returned once `depth + 1 ≤ FLOW_DEPTH_MAX` holds,
+/// and the `map`/`eval` fan-out (which needs the scheduler and the run's masker) is handed back for the
+/// runner to drive through [`run_map`](crate::fanout::run_map)/[`run_eval`](crate::fanout::run_eval).
 #[derive(Debug)]
 pub enum Dispatch<'t> {
     /// A leaf task's raw adapter output, ready for normalisation and merge.
     Leaf(AdapterOutput),
     /// A `flow` task the runner recurses into (the depth guard has already passed).
     Flow(&'t FlowWith),
+    /// A `map` task the runner fans out over its `items` through the scheduler.
+    Map(&'t MapWith),
+    /// An `eval` task the runner fans out over its `dataset` through the scheduler.
+    Eval(&'t EvalWith),
 }
 
 /// Route `task` (named `name`) through the `type` → port seam against `scope`, at recursion `depth`.
 ///
-/// Returns the leaf output, or [`Dispatch::Flow`] for a `flow` task within the depth bound. Every
-/// failure is a typed [`RunError`]: an adapter error propagates as-is; a failed `assert` is
-/// `assertion_failed`; a too-deep `flow` is `flow_depth_exceeded`; `map`/`eval` are
-/// `task_type_unsupported` (fan-out is engine unit 05).
+/// Returns the leaf output, [`Dispatch::Flow`] for a `flow` task within the depth bound, or
+/// [`Dispatch::Map`]/[`Dispatch::Eval`] for the fan-out control-flow types (which the runner drives
+/// over the injected scheduler). Every failure is a typed [`RunError`]: an adapter error propagates
+/// as-is; a failed `assert` is `assertion_failed`; a too-deep `flow` is `flow_depth_exceeded`.
 pub async fn dispatch_task<'t>(
     task: &'t Task,
     name: &str,
@@ -113,11 +121,12 @@ pub async fn dispatch_task<'t>(
                 "assertions": aw.assertions.len() as u64,
             }))))
         }
-        TaskWith::Map(_) | TaskWith::Eval(_) => Err(RunError::run_failure(
-            "task_type_unsupported",
-            "map/eval fan-out is provided by a later engine unit (05), not the sequential runner",
-        )
-        .with_task(name)),
+        // `map`/`eval` are the fan-out control-flow types: the dispatcher classifies them (it does not
+        // execute them), handing the typed payload back for the runner to drive over the injected
+        // `Scheduler` through `run_map`/`run_eval`. The depth guard for a `flow` inner task lives inside
+        // those functions, so — unlike `flow` — the payload is returned without a depth check here.
+        TaskWith::Map(mw) => Ok(Dispatch::Map(mw)),
+        TaskWith::Eval(ew) => Ok(Dispatch::Eval(ew)),
         TaskWith::Flow(fw) => {
             // The depth guard is a typed error first (input-reachable via a deep nest) and an
             // asserted backstop — the same discipline the state-cap merge uses. `depth >=

@@ -541,20 +541,21 @@ pub trait IdGenerator: Send + Sync {
 /// [`FANOUT_WIDTH_MAX`](tmx_schema::limits::FANOUT_WIDTH_MAX); the adapter asserts `concurrency >= 1`.
 ///
 /// **Not object-safe**: the method is generic over the unit type `T` and the per-index closure, so it
-/// cannot live in a vtable — this port is used behind a generic bound, never as `dyn`. It keeps a
-/// native `async fn` (no `#[async_trait]` boxing) and opts out of the `async_fn_in_trait` lint: the
-/// returned future's `Send`-ness is bounded per adapter through `Fut: Future + Send` below.
+/// cannot live in a vtable — this port is used behind a generic bound, never as `dyn`. It uses a
+/// return-position `impl Future + Send` (no `#[async_trait]` boxing): the returned future is bounded
+/// `Send` so the pure runner — whose own recursion future must be `Send` — can `.await` a fan-out
+/// across the port. Each adapter's `async fn` body satisfies the bound because its per-index `Fut` is
+/// `Send`.
 #[must_use = "a Scheduler is a port handle; dropping it discards a wired capability"]
 pub trait Scheduler: Send + Sync {
     /// Run `make(i)` for `i in 0..count`, at most `concurrency` concurrently, collecting the results
     /// in **index** order. The returned vector always has length `count`.
-    #[allow(async_fn_in_trait)]
-    async fn run_indexed<T, F, Fut>(
+    fn run_indexed<T, F, Fut>(
         &self,
         count: u32,
         concurrency: u32,
         make: F,
-    ) -> Vec<Result<T, RunError>>
+    ) -> impl std::future::Future<Output = Vec<Result<T, RunError>>> + Send
     where
         T: Send,
         F: Fn(u32) -> Fut + Send + Sync,

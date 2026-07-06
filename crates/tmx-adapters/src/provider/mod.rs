@@ -339,7 +339,10 @@ impl EnvironmentProvider for FlowProvider<'_> {
         let mut masker = Masker::new();
         let mut resolved_secrets: Vec<String> = Vec::new();
         // The method body runs through the *same* PipelineRunner at depth 0, so any nested `flow`
-        // task inside it recurses under the FLOW_DEPTH_MAX bound exactly as an ordinary run would.
+        // task inside it recurses under the FLOW_DEPTH_MAX bound exactly as an ordinary run would. Its
+        // `map`/`eval` fan-out runs over the always-available serial scheduler (correct, deterministic
+        // output — identical to the concurrent adapter, only serial).
+        let scheduler = crate::scheduler::SerialScheduler::new();
         let runner = PipelineRunner::new(self.config);
         let outcome = runner
             .run(
@@ -347,6 +350,7 @@ impl EnvironmentProvider for FlowProvider<'_> {
                 &flow,
                 &inputs,
                 self.ports,
+                &scheduler,
                 &mut masker,
                 &mut resolved_secrets,
                 None,

@@ -22,6 +22,7 @@ use tmx_schema::limits::HOOK_TASKS_MAX;
 use crate::error::RunError;
 use crate::mask::Masker;
 use crate::model::{Event, Milliseconds, ResolvedFlow, RunId, TaskStatus};
+use crate::ports::driven::Scheduler;
 use crate::resolve::desugar_tasks;
 use crate::runner::{PipelineRunner, Ports, RunConfig, emit_event};
 
@@ -117,12 +118,13 @@ impl<'a> HookRunner<'a> {
     /// reserved for a structural fault: an over-[`HOOK_TASKS_MAX`] body, an unsupported hook reference,
     /// or an output-port write failure.
     #[allow(clippy::too_many_arguments)] // mirrors the runner's collaborators; a hook body is a full run
-    pub async fn fire(
+    pub async fn fire<S: Scheduler>(
         &self,
         kind: HookKind,
         id: &RunId,
         inputs: &Value,
         ports: Ports<'_>,
+        scheduler: &S,
         masker: &mut Masker,
         resolved_secrets: &mut Vec<String>,
         depth: u32,
@@ -171,6 +173,7 @@ impl<'a> HookRunner<'a> {
                 &body,
                 inputs,
                 ports,
+                scheduler,
                 masker,
                 resolved_secrets,
                 None,

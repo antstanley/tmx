@@ -149,6 +149,9 @@ async fn run_once(args: &RunArgs) -> Result<RunRecord, RunError> {
             .map(crate::args::CheckProducesArg::to_check)
             .unwrap_or_default(),
         max_state_size_bytes: args.max_state_size,
+        // The global `map`/`eval` fan-out ceiling: each fan-out task's own `concurrency` is clamped by
+        // this. `None` leaves `CONCURRENCY_MAX` as the only bound.
+        concurrency_cap: args.concurrency,
     };
 
     // Prepare the flow from the run flags: coerce the supplied inputs to their declared `type`, apply
@@ -388,6 +391,7 @@ async fn run_flow_direct(
             flow,
             &merged,
             ports,
+            composed.scheduler(),
             &mut masker,
             &mut resolved_secrets,
             seed,

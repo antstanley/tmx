@@ -27,7 +27,7 @@ use tmx_schema::limits::HOOK_TASKS_MAX;
 use tmx_testkit::{
     FakeChatModel, FakeHttpClient, FakeReferenceResolver, FakeSchemaValidator, FakeSecretResolver,
     FakeSourceLoader, FixedClock, MemFileSystem, MemObjectStore, RecordingEventSink,
-    RecordingProcessRunner, SeededIdGenerator,
+    RecordingProcessRunner, SeededIdGenerator, SerialScheduler,
 };
 
 use tmx_core::Ports;
@@ -139,7 +139,13 @@ fn fire_count(events: &[Event], hook: &str) -> usize {
 
 /// Run `reference` through the `EngineRunFlow` use case over the bundle.
 fn run_engine(bundle: &Bundle, reference: &str, inputs: Value) -> Result<RunRecord, RunError> {
-    let use_case = EngineRunFlow::new(bundle.ports(), &bundle.ids, RunConfig::default());
+    let scheduler = SerialScheduler::new();
+    let use_case = EngineRunFlow::new(
+        bundle.ports(),
+        &bundle.ids,
+        &scheduler,
+        RunConfig::default(),
+    );
     block_on_ready(use_case.run(reference, inputs, RunOptions::default()))
 }
 
@@ -360,11 +366,13 @@ fn destroy_fires_through_the_status_independent_finally_path() {
     let id = RunId::new(A_RUN_ID).expect("valid id");
     let mut masker = Masker::new();
     let mut secrets = Vec::new();
+    let scheduler = SerialScheduler::new();
     let fired = block_on_ready(hooks.fire(
         HookKind::Destroy,
         &id,
         &json!({}),
         bundle.ports(),
+        &scheduler,
         &mut masker,
         &mut secrets,
         0,
@@ -429,11 +437,13 @@ fn firing_a_hook_while_already_inside_one_trips_the_assertion() {
     let id = RunId::new(A_RUN_ID).expect("valid id");
     let mut masker = Masker::new();
     let mut secrets = Vec::new();
+    let scheduler = SerialScheduler::new();
     let _ = block_on_ready(hooks.fire(
         HookKind::Change,
         &id,
         &json!({}),
         bundle.ports(),
+        &scheduler,
         &mut masker,
         &mut secrets,
         0,
@@ -462,11 +472,13 @@ fn an_over_limit_hook_body_is_rejected() {
     let id = RunId::new(A_RUN_ID).expect("valid id");
     let mut masker = Masker::new();
     let mut secrets = Vec::new();
+    let scheduler = SerialScheduler::new();
     let err = block_on_ready(hooks.fire(
         HookKind::Create,
         &id,
         &json!({}),
         bundle.ports(),
+        &scheduler,
         &mut masker,
         &mut secrets,
         0,

@@ -20,7 +20,7 @@ use crate::error::RunError;
 use crate::lint::analyze_flow;
 use crate::mask::Masker;
 use crate::model::{Diagnostic, PipelineState, RunRecord, Severity};
-use crate::ports::driven::IdGenerator;
+use crate::ports::driven::{IdGenerator, Scheduler};
 use crate::ports::driving::{LintFlow, RunFlow, RunOptions};
 use crate::preflight::PreflightPorts;
 use crate::resolve::{merged_inputs, resolve_flow};
@@ -31,22 +31,34 @@ use crate::runner::{PipelineRunner, Ports, RunConfig};
 /// Holds the [`Ports`] bundle, the [`IdGenerator`] (which is not part of the loop's bundle — a run id
 /// is minted once, up front), and the [`RunConfig`] engine flags. Borrows its ports, so the
 /// composition root (or a test) owns the adapters and hands the use case their references.
-pub struct EngineRunFlow<'a> {
+pub struct EngineRunFlow<'a, S: Scheduler> {
     ports: Ports<'a>,
     ids: &'a dyn IdGenerator,
+    scheduler: &'a S,
     config: RunConfig,
 }
 
-impl<'a> EngineRunFlow<'a> {
-    /// Wire the use case over `ports`, the `ids` generator, and the engine `config`.
+impl<'a, S: Scheduler> EngineRunFlow<'a, S> {
+    /// Wire the use case over `ports`, the `ids` generator, the `scheduler` (the `map`/`eval` fan-out
+    /// port), and the engine `config`.
     #[must_use]
-    pub fn new(ports: Ports<'a>, ids: &'a dyn IdGenerator, config: RunConfig) -> Self {
-        Self { ports, ids, config }
+    pub fn new(
+        ports: Ports<'a>,
+        ids: &'a dyn IdGenerator,
+        scheduler: &'a S,
+        config: RunConfig,
+    ) -> Self {
+        Self {
+            ports,
+            ids,
+            scheduler,
+            config,
+        }
     }
 }
 
 #[async_trait]
-impl RunFlow for EngineRunFlow<'_> {
+impl<S: Scheduler> RunFlow for EngineRunFlow<'_, S> {
     async fn run(
         &self,
         reference: &str,
@@ -81,6 +93,7 @@ impl RunFlow for EngineRunFlow<'_> {
                 &flow,
                 &merged,
                 self.ports,
+                self.scheduler,
                 &mut masker,
                 &mut resolved_secrets,
                 None,

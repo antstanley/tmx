@@ -28,7 +28,7 @@ use tmx_core::{
 use tmx_testkit::{
     FakeChatModel, FakeHttpClient, FakeReferenceResolver, FakeSchemaValidator, FakeSecretResolver,
     FakeSourceLoader, FixedClock, MemFileSystem, MemObjectStore, RecordingEventSink,
-    RecordingProcessRunner,
+    RecordingProcessRunner, SerialScheduler,
 };
 
 /// A [`ProcessRunner`] whose `run` never returns — the adapter that ignores the grace period, so the
@@ -195,6 +195,7 @@ fn a_hard_cancelled_in_flight_task_ends_timed_out_fires_destroy_and_stops_dispat
     let mut masker = Masker::new();
     let mut secrets: Vec<String> = Vec::new();
     let runner = PipelineRunner::new(RunConfig::default());
+    let scheduler = SerialScheduler::new();
 
     let cancel = bundle.cancel.clone();
     let outcome = drive_with_trigger(
@@ -203,6 +204,7 @@ fn a_hard_cancelled_in_flight_task_ends_timed_out_fires_destroy_and_stops_dispat
             &flow,
             &json!({}),
             bundle.ports(),
+            &scheduler,
             &mut masker,
             &mut secrets,
             None,
@@ -267,11 +269,13 @@ fn a_soft_cancel_requested_before_a_task_stops_dispatch_cleanly() {
     let mut masker = Masker::new();
     let mut secrets: Vec<String> = Vec::new();
     let runner = PipelineRunner::new(RunConfig::default());
+    let scheduler = SerialScheduler::new();
     let outcome = block_on_ready(runner.run(
         &id,
         &flow,
         &json!({}),
         bundle.ports(),
+        &scheduler,
         &mut masker,
         &mut secrets,
         None,
@@ -330,11 +334,13 @@ fn a_never_triggered_token_runs_the_flow_to_completion_unaffected() {
     let mut masker = Masker::new();
     let mut secrets: Vec<String> = Vec::new();
     let runner = PipelineRunner::new(RunConfig::default());
+    let scheduler = SerialScheduler::new();
     let outcome = block_on_ready(runner.run(
         &id,
         &flow,
         &json!({}),
         bundle.ports(),
+        &scheduler,
         &mut masker,
         &mut secrets,
         None,

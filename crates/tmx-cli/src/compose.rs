@@ -33,7 +33,7 @@ use tmx_adapters::loader::FileSourceLoader;
 use tmx_adapters::process::OsProcessRunner;
 use tmx_adapters::resolve::FileReferenceResolver;
 use tmx_adapters::runstore::{LocalRunStore, StoringSink};
-use tmx_adapters::scheduler::SerialScheduler;
+use tmx_adapters::scheduler::TokioScheduler;
 use tmx_adapters::secret::BuiltinSecretResolver;
 use tmx_adapters::sink::{Format, ReporterSink};
 #[cfg(feature = "store")]
@@ -81,12 +81,11 @@ pub struct Composed {
     references: FileReferenceResolver,
     loader: FileSourceLoader,
     ids: Uuidv7Generator,
-    // Built now for the default `concurrency: 1` path; wired into `map`/`eval` fan-out in task 18.
-    // The sequential runner takes no `Scheduler` (its `Ports` bundle has no scheduler field), so the
-    // composed handle is not read on the task-17 run path — `allow(dead_code)` records that it is
-    // deliberately composed ahead of the task-18 fan-out that consumes it, not accidentally unused.
-    #[allow(dead_code)]
-    scheduler: SerialScheduler,
+    // The bounded-concurrent `map`/`eval` fan-out port (task 33): the `tmx run` path injects this into
+    // `PipelineRunner::run`, so a fan-out task runs its elements at up to `--concurrency` at once and
+    // collects them in item order. It bounds in-flight work with a semaphore under the CLI's tokio
+    // runtime; a `concurrency: 1` fan-out is strictly serial, identical in output to the serial adapter.
+    scheduler: TokioScheduler,
     // The run's cancellation token (task 29): threaded into every adapter call through `ports()`. A
     // fresh `Composed` owns a never-triggered token, so a run wires nothing until `with_cancel` hands
     // it the token the CLI's `--timeout`/SIGINT driver triggers.
@@ -141,7 +140,7 @@ impl Composed {
             references: FileReferenceResolver::new(base_dir),
             loader: FileSourceLoader::new(),
             ids: Uuidv7Generator::new(),
-            scheduler: SerialScheduler::new(),
+            scheduler: TokioScheduler::new(),
             cancel: CancelToken::new(),
             teardown: CancelToken::new(),
         })
@@ -227,13 +226,12 @@ impl Composed {
         &self.ids
     }
 
-    /// The serial scheduler handle — the fan-out seam wired into `map`/`eval` in task 18. Held here so
-    /// the concurrency port is composed alongside the rest, not bolted on later. Returned as the
-    /// concrete type because [`Scheduler`](tmx_core::ports::driven::Scheduler)'s generic method makes
-    /// it non-`dyn`-compatible; it is used behind a generic bound, never as `dyn`.
-    #[allow(dead_code)] // consumed by the task-18 fan-out path; exercised by this module's tests
+    /// The bounded-concurrent `map`/`eval` fan-out scheduler handle — injected into
+    /// [`PipelineRunner::run`] by the `tmx run` path (task 33). Returned as the concrete type because
+    /// [`Scheduler`](tmx_core::ports::driven::Scheduler)'s generic method makes it non-`dyn`-compatible;
+    /// it is used behind a generic bound, never as `dyn`.
     #[must_use]
-    pub fn scheduler(&self) -> &SerialScheduler {
+    pub fn scheduler(&self) -> &TokioScheduler {
         &self.scheduler
     }
 
@@ -250,21 +248,8 @@ impl Composed {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::future::Future;
-    use std::pin::pin;
-    use std::task::{Context, Poll};
 
     use tmx_core::ports::driven::Scheduler;
-
-    fn block_on_ready<F: Future>(fut: F) -> F::Output {
-        let waker = std::task::Waker::noop();
-        let mut cx = Context::from_waker(waker);
-        let mut fut = pin!(fut);
-        match fut.as_mut().poll(&mut cx) {
-            Poll::Ready(value) => value,
-            Poll::Pending => panic!("a ready future must complete on first poll"),
-        }
-    }
 
     #[test]
     fn composes_the_adapter_bundle_and_advertises_only_real_capabilities() {
@@ -309,9 +294,10 @@ mod tests {
             "chat is wired to the ChatCompletions model and real with the `chat` feature"
         );
 
-        // The scheduler is composed now (wired into fan-out in task 18) and is a usable handle: a
-        // trivial serial fan-out runs through it, proving it is wired, not merely constructed.
-        let results = block_on_ready(
+        // The bounded-concurrent fan-out scheduler is composed and is a usable handle: a trivial
+        // fan-out runs through it under a runtime, proving it is wired, not merely constructed.
+        let runtime = tokio::runtime::Runtime::new().expect("a tokio runtime for the scheduler");
+        let results = runtime.block_on(
             composed
                 .scheduler()
                 .run_indexed(2, 1, |i| async move { Ok::<u32, RunError>(i) }),

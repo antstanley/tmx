@@ -27,7 +27,7 @@ use tmx_core::{
 use tmx_testkit::{
     FakeChatModel, FakeHttpClient, FakeReferenceResolver, FakeSchemaValidator, FakeSecretResolver,
     FakeSourceLoader, FixedClock, MemFileSystem, MemObjectStore, RecordingEventSink,
-    RecordingProcessRunner, SeededIdGenerator,
+    RecordingProcessRunner, SeededIdGenerator, SerialScheduler,
 };
 
 /// Drive an immediately-ready future to completion with a no-op waker (the purity-preserving pattern).
@@ -107,7 +107,8 @@ fn run_under(mode: ProducesCheck) -> (RunRecord, usize) {
         check_produces: mode,
         ..RunConfig::default()
     };
-    let use_case = EngineRunFlow::new(ports, &ids, config);
+    let scheduler = SerialScheduler::new();
+    let use_case = EngineRunFlow::new(ports, &ids, &scheduler, config);
     let record = block_on_ready(use_case.run("build-flow", json!({}), RunOptions::default()))
         .expect("the run completes to a terminal record");
     (record, schema.produces_call_count())

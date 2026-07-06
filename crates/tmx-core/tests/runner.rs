@@ -24,7 +24,7 @@ use tmx_core::{
 use tmx_testkit::{
     FakeChatModel, FakeHttpClient, FakeReferenceResolver, FakeSchemaValidator, FakeSecretResolver,
     FakeSourceLoader, FixedClock, MemFileSystem, MemObjectStore, RecordingEventSink,
-    RecordingProcessRunner, SeededIdGenerator,
+    RecordingProcessRunner, SeededIdGenerator, SerialScheduler,
 };
 
 /// Drive an immediately-ready future to completion with a no-op waker — the purity-preserving
@@ -127,7 +127,13 @@ fn tags(events: &[Event]) -> Vec<String> {
 
 /// Run `reference` through the `EngineRunFlow` use case over the bundle.
 fn run_engine(bundle: &Bundle, reference: &str, inputs: Value) -> Result<RunRecord, RunError> {
-    let use_case = EngineRunFlow::new(bundle.ports(), &bundle.ids, RunConfig::default());
+    let scheduler = SerialScheduler::new();
+    let use_case = EngineRunFlow::new(
+        bundle.ports(),
+        &bundle.ids,
+        &scheduler,
+        RunConfig::default(),
+    );
     block_on_ready(use_case.run(reference, inputs, RunOptions::default()))
 }
 
@@ -497,6 +503,7 @@ fn runner_flow_task_past_the_depth_bound_yields_flow_depth_exceeded() {
     let mut masker = Masker::new();
     let mut secrets = Vec::new();
     let runner = PipelineRunner::new(RunConfig::default());
+    let scheduler = SerialScheduler::new();
     // Start at the depth ceiling: the single flow task's guard sees depth + 1 > FLOW_DEPTH_MAX.
     let depth_ceiling = 8; // FLOW_DEPTH_MAX
     let outcome = block_on_ready(runner.run(
@@ -504,6 +511,7 @@ fn runner_flow_task_past_the_depth_bound_yields_flow_depth_exceeded() {
         &flow,
         &json!({}),
         bundle.ports(),
+        &scheduler,
         &mut masker,
         &mut secrets,
         None,
@@ -549,11 +557,13 @@ fn runner_rejects_missing_and_duplicate_task_names() {
         let flow = resolve_flow(flow_json).expect("the flow resolves");
         let mut masker = Masker::new();
         let mut secrets = Vec::new();
+        let scheduler = SerialScheduler::new();
         block_on_ready(runner.run(
             &id,
             &flow,
             &json!({}),
             bundle.ports(),
+            &scheduler,
             &mut masker,
             &mut secrets,
             None,
@@ -611,11 +621,13 @@ fn runner_binds_the_matrix_combination_into_every_task_scope() {
         };
         let mut masker = Masker::new();
         let mut secrets = Vec::new();
+        let scheduler = SerialScheduler::new();
         block_on_ready(runner.run(
             &id,
             &flow,
             &json!({}),
             bundle.ports(),
+            &scheduler,
             &mut masker,
             &mut secrets,
             None,
@@ -655,6 +667,7 @@ fn runner_seeds_prior_state_so_a_sliced_continuation_reads_it() {
 
     let run_with = |seed: Option<&PipelineState>| -> (RunStatus, Value) {
         let runner = PipelineRunner::new(RunConfig::default());
+        let scheduler = SerialScheduler::new();
         let mut masker = Masker::new();
         let mut secrets = Vec::new();
         let outcome = block_on_ready(runner.run(
@@ -662,6 +675,7 @@ fn runner_seeds_prior_state_so_a_sliced_continuation_reads_it() {
             &flow,
             &json!({}),
             bundle.ports(),
+            &scheduler,
             &mut masker,
             &mut secrets,
             seed,
