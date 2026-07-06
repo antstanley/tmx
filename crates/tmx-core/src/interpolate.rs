@@ -571,18 +571,41 @@ fn strict_eq(a: &Value, b: &Value) -> bool {
     }
 }
 
+/// The default root name a `map` element binds under when the task declares no `as:` alias.
+const DEFAULT_ITEM_ALIAS: &str = "item";
+
+/// The synthetic field carrying a `map` element's zero-based position (`${{ item.index }}`).
+const ITEM_INDEX_FIELD: &str = "index";
+
 /// Resolve a namespace-rooted access chain against `scope`.
 fn resolve_path(root: &str, steps: &[Step], scope: &Scope) -> Result<Value, RunError> {
     let root_is_secret = root == "secrets";
+    // The `map` element binds under its `as:` alias (default `item`); a non-`item` alias means the
+    // literal `item` root is *not* bound (the alias replaces it, per 05 §`map`).
+    let item_alias = scope.item_alias.unwrap_or(DEFAULT_ITEM_ALIAS);
     let base: &Value = match root {
         "inputs" => scope.inputs,
         "env" => scope.env,
         "secrets" => scope.secrets,
         "tasks" => scope.tasks,
         "matrix" => scope.matrix,
-        "item" => scope.item.ok_or_else(|| unbound(root))?,
         "case" => scope.case.ok_or_else(|| unbound(root))?,
         "output" => scope.output.ok_or_else(|| unbound(root))?,
+        _ if root == item_alias => {
+            let item = scope.item.ok_or_else(|| unbound(root))?;
+            // `.index` is unconditional across element types (04 §Interpolation namespaces). An object
+            // element carries a synthetic `index` key merged in at binding (its own key wins), but a
+            // scalar or array element cannot hold one — so `${{ <alias>.index }}` is synthesised here
+            // from the threaded position. Fires only for non-object elements and only for a lone
+            // `.index` access (an object routes through its merged key via the normal step walk).
+            if !item.is_object()
+                && let ([Step::Field(field)], Some(index)) = (steps, scope.item_index)
+                && field == ITEM_INDEX_FIELD
+            {
+                return Ok(Value::from(index));
+            }
+            item
+        }
         other => {
             return Err(RunError::resolution(
                 "unknown_namespace",
@@ -722,6 +745,8 @@ mod tests {
         secrets: Value,
         tasks: Value,
         item: Option<Value>,
+        item_alias: Option<String>,
+        item_index: Option<u32>,
         case: Option<Value>,
         output: Option<Value>,
         matrix: Value,
@@ -735,6 +760,8 @@ mod tests {
                 secrets: &self.secrets,
                 tasks: &self.tasks,
                 item: self.item.as_ref(),
+                item_alias: self.item_alias.as_deref(),
+                item_index: self.item_index,
                 case: self.case.as_ref(),
                 output: self.output.as_ref(),
                 matrix: &self.matrix,
@@ -749,6 +776,8 @@ mod tests {
             secrets: json!({ "TOKEN": "s3cr3t" }),
             tasks: json!({ "build": { "ok": true, "artifacts": ["a", "b"] } }),
             item: None,
+            item_alias: None,
+            item_index: None,
             case: None,
             output: None,
             matrix: json!({ "os": "linux" }),
@@ -845,6 +874,119 @@ mod tests {
         assert!(
             eval_str("matrix", &data).is_ok(),
             "matrix is always a bound namespace"
+        );
+    }
+
+    // --- Task 35: `as:` alias binding + unconditional `.index` ---------------------------------
+
+    #[test]
+    fn the_as_alias_binds_the_element_under_its_name() {
+        // A `map` declaring `as: region` binds the element under `region`; `${{ region.* }}` resolves
+        // through the interpolator's dynamic root, for object, array, and scalar elements. The `item`
+        // value here is what the runner's `bind_item` produces for an object element — the element with
+        // the synthetic `index` merged in.
+        let mut data = sample();
+        data.item = Some(json!({ "code": "eu-west", "index": 4 }));
+        data.item_alias = Some("region".to_string());
+        data.item_index = Some(4);
+        assert_eq!(
+            eval_str("region.code", &data).unwrap(),
+            json!("eu-west"),
+            "an object element resolves under its `as:` alias"
+        );
+        assert_eq!(
+            eval_str("region", &data).unwrap(),
+            json!({ "code": "eu-west", "index": 4 }),
+            "bare `<alias>` yields the whole element (object carries its merged synthetic index)"
+        );
+        assert_eq!(
+            eval_str("region.index", &data).unwrap(),
+            json!(4),
+            "`<alias>.index` reads the element's position"
+        );
+    }
+
+    #[test]
+    fn the_alias_replaces_item_so_bare_item_is_unbound() {
+        // With `as: region` set, the literal `item` root is no longer bound (the alias replaces it),
+        // so `${{ item }}` is a typed unknown_namespace — the negative space of the rename.
+        let mut data = sample();
+        data.item = Some(json!("x"));
+        data.item_alias = Some("region".to_string());
+        data.item_index = Some(0);
+        let err = eval_str("item", &data).expect_err("`item` must be unbound when aliased away");
+        assert_eq!(
+            err.category,
+            crate::error::ErrorCategory::Resolution,
+            "an aliased-away `item` is a resolution error"
+        );
+        assert_eq!(
+            err.code, "unknown_namespace",
+            "`item` is unknown when the element binds under an alias"
+        );
+        // The alias itself still resolves — proving the rename, not a blanket unbinding.
+        assert_eq!(eval_str("region", &data).unwrap(), json!("x"));
+    }
+
+    #[test]
+    fn the_synthetic_index_resolves_for_scalar_and_array_elements() {
+        // `.index` is unconditional (04 §Interpolation namespaces): a scalar or array element cannot
+        // carry a synthetic key, yet `${{ item.index }}` still yields its position, and the element's
+        // own value stays readable through the bare root.
+        let mut scalar = sample();
+        scalar.item = Some(json!("hello"));
+        scalar.item_index = Some(2);
+        assert_eq!(
+            eval_str("item.index", &scalar).unwrap(),
+            json!(2),
+            "a scalar element's `.index` is synthesised from its position"
+        );
+        assert_eq!(
+            eval_str("item", &scalar).unwrap(),
+            json!("hello"),
+            "the scalar element's own value stays readable through the bare root"
+        );
+
+        let mut array = sample();
+        array.item = Some(json!(["a", "b"]));
+        array.item_index = Some(7);
+        assert_eq!(
+            eval_str("item.index", &array).unwrap(),
+            json!(7),
+            "an array element's `.index` is synthesised too"
+        );
+        assert_eq!(
+            eval_str("item[0]", &array).unwrap(),
+            json!("a"),
+            "the array element's own entries stay readable"
+        );
+    }
+
+    #[test]
+    fn an_object_element_with_its_own_index_wins_over_the_synthetic_one() {
+        // Element data wins: an object element that defines its own `index` keeps it, and the threaded
+        // position is not substituted (the merged key is authoritative for objects).
+        let mut data = sample();
+        data.item = Some(json!({ "index": 99, "sku": "x1" }));
+        data.item_index = Some(3);
+        assert_eq!(
+            eval_str("item.index", &data).unwrap(),
+            json!(99),
+            "the object's own `index` field wins over the threaded position"
+        );
+    }
+
+    #[test]
+    fn a_scalar_field_other_than_index_is_still_a_type_mismatch() {
+        // Negative space: the `.index` synthesis is surgical — any *other* field access on a scalar
+        // element is still a type_mismatch, not a silently-synthesised value.
+        let mut data = sample();
+        data.item = Some(json!("scalar"));
+        data.item_index = Some(1);
+        let err = eval_str("item.length", &data).expect_err("a non-index field of a scalar fails");
+        assert_eq!(
+            err.code, "type_mismatch",
+            "reading a non-`index` property of a scalar element is a type_mismatch"
         );
     }
 

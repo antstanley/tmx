@@ -221,6 +221,8 @@ pub fn empty_scope(empty: &Value) -> Scope<'_> {
         secrets: empty,
         tasks: empty,
         item: None,
+        item_alias: None,
+        item_index: None,
         case: None,
         output: None,
         matrix: empty,

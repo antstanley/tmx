@@ -673,8 +673,14 @@ pub struct Scope<'a> {
     pub secrets: &'a Value,
     /// Prior tasks' merged outputs (`${{ tasks.NAME.field }}`) — the Pipeline state.
     pub tasks: &'a Value,
-    /// The current `map` element (`${{ item.* }}`), when inside a fan-out.
+    /// The current `map` element (`${{ item.* }}`, or the `as:` alias), when inside a fan-out.
     pub item: Option<&'a Value>,
+    /// The root name the current `map` element binds under — the task's `as:` alias, defaulting to
+    /// `item` when `None`. Lets `${{ region.* }}` resolve the element when `as: region` is declared.
+    pub item_alias: Option<&'a str>,
+    /// The zero-based position of the current `map` element. Threaded so `${{ item.index }}` (or the
+    /// alias's `.index`) resolves for scalar and array elements, which cannot carry a synthetic key.
+    pub item_index: Option<u32>,
     /// The current `eval` case (`${{ case.* }}`), when inside an eval.
     pub case: Option<&'a Value>,
     /// The subject's output for the current eval case (`${{ output }}`), when inside an eval.

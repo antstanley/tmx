@@ -654,6 +654,8 @@ impl PipelineRunner {
                 secrets: &empty,
                 tasks: state,
                 item: None,
+                item_alias: None,
+                item_index: None,
                 case: None,
                 output: None,
                 matrix: &self.matrix,
@@ -682,6 +684,8 @@ impl PipelineRunner {
             secrets: &secrets_value,
             tasks: state,
             item: None,
+            item_alias: None,
+            item_index: None,
             case: None,
             output: None,
             matrix: &self.matrix,
@@ -859,6 +863,10 @@ impl PipelineRunner {
                 let start_ms = ports.clock.now_ms();
                 let item_scope = Scope {
                     item: Some(&element),
+                    // The `as:` alias renames the element's root (default `item`), and the element's
+                    // position is threaded so `${{ <alias>.index }}` resolves for every element type.
+                    item_alias: map.as_binding.as_deref(),
+                    item_index: Some(index),
                     ..*scope
                 };
                 let result = self

@@ -380,6 +380,8 @@ mod tokio_tests {
             secrets: &empty,
             tasks: &empty,
             item: None,
+            item_alias: None,
+            item_index: None,
             case: None,
             output: None,
             matrix: &empty,

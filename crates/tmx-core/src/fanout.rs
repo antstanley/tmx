@@ -186,10 +186,16 @@ where
     Ok(Value::Array(out))
 }
 
-/// Bind one element as the inner task's `item` scope value: the element itself, plus a synthetic
-/// `index` for object elements so `${{ item.index }}` reads the element's position. A scalar or array
-/// element is bound unchanged (it is used whole, e.g. `${{ item }}`); an object that already defines
-/// its own `index` keeps it (the element's data wins over the synthetic key).
+/// Bind one element as the inner task's scope *value*: the element itself, plus a synthetic `index`
+/// for object elements so `${{ item.index }}` reads the element's position. A scalar or array element
+/// is bound unchanged (it is used whole, e.g. `${{ item }}`); an object that already defines its own
+/// `index` keeps it (the element's data wins over the synthetic key).
+///
+/// `.index` is *unconditional* across element types (04 §Interpolation namespaces), but a scalar or
+/// array element has nowhere to hold a synthetic key — so for those the position is threaded to the
+/// interpolator out-of-band via [`Scope::item_index`], which synthesises `${{ <alias>.index }}`. The
+/// element's binding *root name* (the map's `as:` alias, default `item`) is likewise threaded via
+/// [`Scope::item_alias`]; both are set by the runner alongside this value.
 fn bind_item(element: &Value, index: u32) -> Value {
     match element {
         Value::Object(fields) => {
@@ -870,6 +876,8 @@ mod tests {
             secrets: empty,
             tasks: empty,
             item: None,
+            item_alias: None,
+            item_index: None,
             case: None,
             output: None,
             matrix: empty,

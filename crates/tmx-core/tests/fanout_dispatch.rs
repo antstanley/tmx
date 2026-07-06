@@ -234,6 +234,146 @@ fn a_map_binds_each_element_under_item_so_the_inner_task_reads_it() {
 }
 
 #[test]
+fn a_map_with_an_as_alias_binds_the_element_and_its_index_end_to_end() {
+    // Task 35 (O1 + O2): a `map` declaring `as: region` over a *scalar* array binds each element under
+    // `region`, and `${{ region.index }}` resolves to its position for a scalar element. The inner
+    // exec's interpolated command is captured, proving both the alias root and the synthetic index
+    // threaded end-to-end through the runner.
+    let mut bundle = Bundle::new();
+    bundle.process.push_result(Ok(stdout(b"0")));
+    bundle.process.push_result(Ok(stdout(b"0")));
+    bundle.seed_flow(
+        "aliasflow",
+        json!({
+            "name": "aliasflow",
+            "tasks": [
+                {
+                    "name": "fan",
+                    "type": "map",
+                    "with": {
+                        "items": ["x", "y"],
+                        "as": "region",
+                        "task": {
+                            "type": "exec",
+                            "with": { "command": "echo ${{ region }}-${{ region.index }}" }
+                        }
+                    }
+                }
+            ]
+        }),
+    );
+
+    let record = run_engine(&bundle, "aliasflow", json!({})).expect("the aliased map runs");
+    assert_eq!(
+        record.status,
+        RunStatus::Ok,
+        "every element's `${{ region }}`/`${{ region.index }}` resolved — no unknown_namespace"
+    );
+    let commands: Vec<String> = bundle
+        .process
+        .calls()
+        .into_iter()
+        .map(|spec| spec.command)
+        .collect();
+    assert_eq!(
+        commands,
+        vec!["echo x-0".to_string(), "echo y-1".to_string()],
+        "the alias binds the scalar element and its zero-based index, in item order"
+    );
+}
+
+#[test]
+fn a_scalar_element_map_reads_item_and_its_synthetic_index_without_an_alias() {
+    // Task 35 (default preserved + O2): with no `as:`, the element still binds under `item`, and a
+    // *scalar* element's `${{ item.index }}` resolves — the case the old object-only synthesis missed.
+    let mut bundle = Bundle::new();
+    bundle.process.push_result(Ok(stdout(b"0")));
+    bundle.process.push_result(Ok(stdout(b"0")));
+    bundle.process.push_result(Ok(stdout(b"0")));
+    bundle.seed_flow(
+        "scalarflow",
+        json!({
+            "name": "scalarflow",
+            "tasks": [
+                {
+                    "name": "fan",
+                    "type": "map",
+                    "with": {
+                        "items": ["a", "b", "c"],
+                        "task": {
+                            "type": "exec",
+                            "with": { "command": "echo ${{ item }}@${{ item.index }}" }
+                        }
+                    }
+                }
+            ]
+        }),
+    );
+
+    let record = run_engine(&bundle, "scalarflow", json!({})).expect("the scalar map runs");
+    assert_eq!(
+        record.status,
+        RunStatus::Ok,
+        "the default `item` binding and its scalar `.index` both resolved"
+    );
+    let commands: Vec<String> = bundle
+        .process
+        .calls()
+        .into_iter()
+        .map(|spec| spec.command)
+        .collect();
+    assert_eq!(
+        commands,
+        vec![
+            "echo a@0".to_string(),
+            "echo b@1".to_string(),
+            "echo c@2".to_string()
+        ],
+        "each scalar element reads its own value and its synthetic index under `item`"
+    );
+}
+
+#[test]
+fn an_aliased_map_leaves_the_literal_item_root_unbound() {
+    // Task 35 (negative space): when `as: region` renames the element, the literal `item` root is not
+    // bound — an inner task reading `${{ item }}` fails with a typed unknown_namespace, surfaced as the
+    // element's error and aborting the run (no silent empty resolution).
+    let mut bundle = Bundle::new();
+    bundle.seed_flow(
+        "shadowflow",
+        json!({
+            "name": "shadowflow",
+            "tasks": [
+                {
+                    "name": "fan",
+                    "type": "map",
+                    "with": {
+                        "items": ["x"],
+                        "as": "region",
+                        "task": { "type": "exec", "with": { "command": "echo ${{ item }}" } }
+                    }
+                }
+            ]
+        }),
+    );
+
+    let record = run_engine(&bundle, "shadowflow", json!({})).expect("the run completes");
+    assert_eq!(
+        record.status,
+        RunStatus::Failed,
+        "reading the aliased-away `item` fails the run"
+    );
+    let error = record.results[0]
+        .error
+        .as_ref()
+        .expect("the map task recorded a failure");
+    assert_eq!(
+        error.code, "unknown_namespace",
+        "the literal `item` is unknown once the element binds under an alias"
+    );
+}
+
+#[test]
 fn an_eval_flow_runs_end_to_end_and_emits_a_scorecard() {
     // O2: a Flow with an `eval` task runs the subject once per case, scores it, and merges a
     // `Scorecard` under the task name; the per-case `eval.case.finish` events fire.
