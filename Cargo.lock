@@ -781,6 +781,7 @@ name = "tmx-adapters"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "jsonschema",
  "serde_json",
  "serde_yaml_ng",
  "tmx-core",

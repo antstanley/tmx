@@ -26,5 +26,12 @@ serde_yaml_ng = "0.10"
 toml = "0.8"
 async-trait = "0.1"
 
+# The `SchemaValidator` adapter (task 14). `jsonschema` is the JSON-Schema-2020-12 engine backing
+# `tmx validate` / preflight, at parity with `scripts/validate.sh`; `default-features = false` drops
+# its optional HTTP retriever so no `reqwest` edge arrives here — cross-file `$ref`s are resolved
+# in-process from the embedded schemas, never over the network. Pinned to the same 0.46 line the
+# `tmx-core` conformance tests already use.
+jsonschema = { version = "0.46", default-features = false }
+
 [lints]
 workspace = true
