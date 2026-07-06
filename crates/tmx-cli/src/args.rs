@@ -15,6 +15,11 @@ use clap::{Parser, Subcommand, ValueEnum};
     version
 )]
 pub struct Cli {
+    /// Select a named configuration profile (07 §Configuration). Overrides `TMX_PROFILE` and a
+    /// `profile` key in the project `tmx.config.*`. Global: it applies to every subcommand.
+    #[arg(long, global = true, value_name = "NAME")]
+    pub profile: Option<String>,
+
     /// The subcommand to run.
     #[command(subcommand)]
     pub command: Command,
@@ -36,6 +41,220 @@ pub enum Command {
     Env(EnvArgs),
     /// Query the local run store: list, show, dump state/logs, prune, or remove runs (07 §Pipeline runs).
     Runs(RunsArgs),
+    /// Validate one or more artifacts against the schema (`ValidateArtifacts`; 07 §`tmx validate`).
+    Validate(ValidateArgs),
+    /// Inspect a Flow's resolved plan: env+context, ordered tasks, inputs, secrets-needed (07 §`tmx inspect`).
+    Inspect(InspectArgs),
+    /// List Flows / tasks / inputs / providers (`Discover`; 07 §`tmx list`).
+    List(ListArgs),
+    /// Scaffold a starter Flow, single-file or folder layout (`ScaffoldFlow`; 07 §`tmx init`).
+    Init(InitArgs),
+    /// Reformat an artifact, converting losslessly across the four formats (`FormatArtifact`; 07 §`tmx fmt`).
+    Fmt(FmtArgs),
+    /// Manage the provider registry: list/show/register/remove/validate (`ManageProviders`; 07 §`tmx provider`).
+    Provider(ProviderArgs),
+    /// Show a Flow's resolved context (env + masked secrets) — an `InspectFlow` projection.
+    Context(ContextArgs),
+    /// List a Flow's needed secrets, masked (an `InspectFlow` projection; 07 §Command mapping).
+    Secrets(SecretsArgs),
+    /// Print the CLI version and the supported TMX spec version (CLI-local; 07 §Command mapping).
+    Version,
+}
+
+/// A [`SourceKind`](tmx_core::ports::driven::SourceKind) selector on the CLI surface — the `--to`
+/// target format of `tmx fmt`. Kept local so `clap`'s derive owns the token vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SourceKindArg {
+    /// YAML.
+    Yaml,
+    /// JSON.
+    Json,
+    /// JSON with comments.
+    Jsonc,
+    /// TOML.
+    Toml,
+}
+
+impl SourceKindArg {
+    /// Map the CLI arg to the port [`SourceKind`](tmx_core::ports::driven::SourceKind).
+    #[must_use]
+    pub fn to_kind(self) -> tmx_core::ports::driven::SourceKind {
+        use tmx_core::ports::driven::SourceKind;
+        match self {
+            SourceKindArg::Yaml => SourceKind::Yaml,
+            SourceKindArg::Json => SourceKind::Json,
+            SourceKindArg::Jsonc => SourceKind::Jsonc,
+            SourceKindArg::Toml => SourceKind::Toml,
+        }
+    }
+}
+
+/// What `tmx list` enumerates — the CLI mirror of
+/// [`DiscoverKind`](tmx_core::ports::driving::DiscoverKind).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum DiscoverKindArg {
+    /// The Flows discoverable in the working directory (the default).
+    #[default]
+    Flows,
+    /// A Flow's tasks.
+    Tasks,
+    /// A Flow's declared inputs.
+    Inputs,
+    /// The registered providers.
+    Providers,
+}
+
+impl DiscoverKindArg {
+    /// Map the CLI arg to the [`DiscoverKind`](tmx_core::ports::driving::DiscoverKind) use-case input.
+    #[must_use]
+    pub fn to_kind(self) -> tmx_core::ports::driving::DiscoverKind {
+        use tmx_core::ports::driving::DiscoverKind;
+        match self {
+            DiscoverKindArg::Flows => DiscoverKind::Flows,
+            DiscoverKindArg::Tasks => DiscoverKind::Tasks,
+            DiscoverKindArg::Inputs => DiscoverKind::Inputs,
+            DiscoverKindArg::Providers => DiscoverKind::Providers,
+        }
+    }
+}
+
+/// Arguments for `tmx validate` — the artifacts to check against the schema (07 §`tmx validate`).
+#[derive(Debug, Default, Parser)]
+pub struct ValidateArgs {
+    /// The artifact files to validate. When omitted, the Flow is resolved by the same search order
+    /// as `tmx run`, and that single Flow is validated.
+    pub paths: Vec<String>,
+}
+
+/// Arguments for `tmx inspect` — the Flow whose resolved plan is projected (07 §`tmx inspect`).
+#[derive(Debug, Default, Parser)]
+pub struct InspectArgs {
+    /// The Flow to inspect; resolved by the same search order as `tmx run` when omitted.
+    pub flow: Option<String>,
+    /// Explicit Flow file, taking precedence over the positional argument and `$TMX_FLOW`.
+    #[arg(short = 'f', long = "file")]
+    pub file: Option<String>,
+}
+
+/// Arguments for `tmx list` — the discovery kind and an optional scoping Flow (07 §`tmx list`).
+#[derive(Debug, Default, Parser)]
+pub struct ListArgs {
+    /// What to list: `flows` (the default), `tasks`, `inputs`, or `providers`.
+    #[arg(value_enum, default_value_t = DiscoverKindArg::Flows)]
+    pub kind: DiscoverKindArg,
+    /// The Flow to scope `tasks`/`inputs` to; resolved by the `tmx run` search order when omitted.
+    pub flow: Option<String>,
+    /// Explicit Flow file, taking precedence over the positional argument and `$TMX_FLOW`.
+    #[arg(short = 'f', long = "file")]
+    pub file: Option<String>,
+}
+
+/// Arguments for `tmx init` — scaffold a starter Flow (07 §`tmx init`).
+#[derive(Debug, Default, Parser)]
+pub struct InitArgs {
+    /// The starter Flow's name (the file stem for a single-file scaffold; the directory name for a
+    /// folder layout). Defaults to `flow`.
+    pub name: Option<String>,
+    /// Scaffold a folder layout (separate `environment.*`/`context.*`/task files) instead of a
+    /// single-file Flow.
+    #[arg(long)]
+    pub folder: bool,
+    /// The directory to scaffold into (defaults to the current working directory).
+    #[arg(long = "dir", value_name = "DIR")]
+    pub dir: Option<String>,
+}
+
+/// Arguments for `tmx fmt` — reformat / convert an artifact (07 §`tmx fmt`).
+#[derive(Debug, Default, Parser)]
+pub struct FmtArgs {
+    /// The artifact file to format. When omitted, the Flow is resolved by the `tmx run` search order.
+    pub path: Option<String>,
+    /// Convert to this target format (loss-free across the four formats). When omitted, the artifact
+    /// is reformatted in its own format.
+    #[arg(long = "to", value_enum)]
+    pub to: Option<SourceKindArg>,
+    /// Write the formatted output back to the source file (converting its extension on a `--to`)
+    /// instead of printing it to stdout.
+    #[arg(long)]
+    pub write: bool,
+}
+
+/// Arguments for `tmx provider` — a provider-registry operation (07 §`tmx provider`).
+#[derive(Debug, Parser)]
+pub struct ProviderArgs {
+    /// The registry operation to perform.
+    #[command(subcommand)]
+    pub command: ProviderCommand,
+}
+
+/// The `tmx provider` sub-actions, one per
+/// [`ProviderOp`](tmx_core::ports::driving::ProviderOp) variant.
+#[derive(Debug, Subcommand)]
+pub enum ProviderCommand {
+    /// List registered providers (name → manifest path).
+    List,
+    /// Show one registered provider's manifest by name.
+    Show {
+        /// The registered provider name.
+        name: String,
+    },
+    /// Register a provider manifest at a path (validated before it is recorded).
+    Register {
+        /// The manifest file path.
+        path: String,
+    },
+    /// Remove a registered provider by name.
+    Remove {
+        /// The registered provider name.
+        name: String,
+    },
+    /// Validate a provider manifest at a path without registering it.
+    Validate {
+        /// The manifest file path.
+        path: String,
+    },
+}
+
+/// Arguments for `tmx context` — the context projection group (07 §Command mapping).
+#[derive(Debug, Parser)]
+pub struct ContextArgs {
+    /// The context sub-action to perform.
+    #[command(subcommand)]
+    pub command: ContextCommand,
+}
+
+/// The `tmx context` sub-actions.
+#[derive(Debug, Subcommand)]
+pub enum ContextCommand {
+    /// Show the Flow's resolved context: env vars and masked secrets.
+    Show {
+        /// The Flow whose context is projected; resolved by the `tmx run` search order when omitted.
+        flow: Option<String>,
+        /// Explicit Flow file, taking precedence over the positional argument and `$TMX_FLOW`.
+        #[arg(short = 'f', long = "file")]
+        file: Option<String>,
+    },
+}
+
+/// Arguments for `tmx secrets` — the secrets projection group (07 §Command mapping).
+#[derive(Debug, Parser)]
+pub struct SecretsArgs {
+    /// The secrets sub-action to perform.
+    #[command(subcommand)]
+    pub command: SecretsCommand,
+}
+
+/// The `tmx secrets` sub-actions.
+#[derive(Debug, Subcommand)]
+pub enum SecretsCommand {
+    /// List the Flow's needed secrets, masked (never a raw value).
+    List {
+        /// The Flow whose secrets are projected; resolved by the `tmx run` search order when omitted.
+        flow: Option<String>,
+        /// Explicit Flow file, taking precedence over the positional argument and `$TMX_FLOW`.
+        #[arg(short = 'f', long = "file")]
+        file: Option<String>,
+    },
 }
 
 /// The runtime `produces`-conformance mode selected by `--check-produces[=warn|strict]` (04 §`produces`

@@ -22,6 +22,13 @@ pub mod matcher;
 pub mod provider;
 pub mod task;
 
+/// The TMX spec version this build implements — the version carried in the frozen
+/// `tmx.schema.json` `$id` path (`0.2.0` (draft): the `map`/`eval` task types and the `produces`
+/// typed-output contract). Surfaced by `tmx version` as the supported spec version. A version
+/// identifier string, not a numeric bound, so it lives here beside the data-model vocabulary rather
+/// than in [`limits`].
+pub const SUPPORTED_SPEC_VERSION: &str = "0.2.0";
+
 pub use context::{Context, EnvMap, Hook, HookUse, Hooks, SecretSource, SecretValue};
 pub use environment::{Environment, Resources};
 pub use flow::{ContextRef, EnvironmentRef, Flow, InputSpec, TaskEntry, Tasks};

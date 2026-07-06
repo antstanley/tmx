@@ -47,7 +47,8 @@ fn main() {
         }
     };
 
-    let code = match cli.command {
+    let Cli { command, profile } = cli;
+    let code = match command {
         Command::Run(run_args) => match runtime.block_on(commands::run::execute(run_args)) {
             Ok(record) => {
                 // The run command already rendered the stdout machine data for the selected
@@ -112,6 +113,126 @@ fn main() {
                 exit_code(&error)
             }
         },
+        Command::Validate(validate_args) => {
+            match runtime.block_on(commands::validate::execute(validate_args)) {
+                Ok(report) => {
+                    // Findings are human-facing on stderr; stdout stays empty (validate emits no
+                    // machine data). Any error-severity finding is a blocking validation failure
+                    // (exit 3); a clean report is exit 0.
+                    for diagnostic in &report.diagnostics {
+                        eprintln!(
+                            "{}: {} [{}]",
+                            diagnostic.severity.as_str(),
+                            diagnostic.message,
+                            diagnostic.code
+                        );
+                    }
+                    if report.is_blocking() {
+                        exit_code(&RunError::validation(
+                            "validation_failed",
+                            "one or more artifacts failed schema validation",
+                        ))
+                    } else {
+                        eprintln!("tmx: all artifacts valid");
+                        EXIT_SUCCESS
+                    }
+                }
+                // A malformed (unparseable) or missing artifact is a fail-fast typed error.
+                Err(error) => {
+                    eprintln!("tmx: {error}");
+                    exit_code(&error)
+                }
+            }
+        }
+        Command::Inspect(inspect_args) => {
+            match runtime.block_on(commands::inspect::execute(inspect_args)) {
+                Ok(view) => {
+                    print_json(&view);
+                    EXIT_SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("tmx: {error}");
+                    exit_code(&error)
+                }
+            }
+        }
+        Command::List(list_args) => {
+            match runtime.block_on(commands::list::execute(list_args, profile)) {
+                Ok(view) => {
+                    print_json(&view);
+                    EXIT_SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("tmx: {error}");
+                    exit_code(&error)
+                }
+            }
+        }
+        Command::Init(init_args) => match runtime.block_on(commands::init::execute(init_args)) {
+            Ok(created) => {
+                print_json(&serde_json::json!({ "created": created }));
+                EXIT_SUCCESS
+            }
+            Err(error) => {
+                eprintln!("tmx: {error}");
+                exit_code(&error)
+            }
+        },
+        Command::Fmt(fmt_args) => match runtime.block_on(commands::fmt::execute(fmt_args)) {
+            Ok(output) => {
+                match output.written_to {
+                    // `--write`: the formatted text went to the file; stdout stays clean.
+                    Some(path) => eprintln!("tmx: wrote {path}"),
+                    // Default: the formatted artifact is the machine data on stdout.
+                    None => print!("{}", output.text),
+                }
+                EXIT_SUCCESS
+            }
+            Err(error) => {
+                eprintln!("tmx: {error}");
+                exit_code(&error)
+            }
+        },
+        Command::Provider(provider_args) => {
+            match runtime.block_on(commands::provider::execute(provider_args)) {
+                Ok(result) => {
+                    print_json(&result);
+                    EXIT_SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("tmx: {error}");
+                    exit_code(&error)
+                }
+            }
+        }
+        Command::Context(context_args) => {
+            match runtime.block_on(commands::context::execute(context_args)) {
+                Ok(view) => {
+                    print_json(&view);
+                    EXIT_SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("tmx: {error}");
+                    exit_code(&error)
+                }
+            }
+        }
+        Command::Secrets(secrets_args) => {
+            match runtime.block_on(commands::secrets::execute(secrets_args)) {
+                Ok(view) => {
+                    print_json(&view);
+                    EXIT_SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("tmx: {error}");
+                    exit_code(&error)
+                }
+            }
+        }
+        Command::Version => {
+            print_json(&commands::version::execute());
+            EXIT_SUCCESS
+        }
     };
     std::process::exit(code);
 }

@@ -11,10 +11,13 @@
 //! `environment.*` / `context.*` / `flow.*` filename convention decides; absent that, "a top-level
 //! document with `tasks` is a Flow"; anything else is a task (a task file may use any filename).
 
+pub mod emit;
 pub(crate) mod json;
 pub(crate) mod jsonc;
 pub(crate) mod toml;
 pub(crate) mod yaml;
+
+pub use emit::emit_source;
 
 use std::path::Path;
 
