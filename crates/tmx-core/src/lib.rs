@@ -21,6 +21,7 @@
 //! pure/async boundary fixed at the trait layer: a driven method is async only where it effects the
 //! outside world. Adapter and use-case *bodies* arrive in later tasks.
 
+pub mod cancel;
 pub mod dispatch;
 pub mod error;
 pub mod fanout;
@@ -37,6 +38,7 @@ pub mod resolve;
 pub mod runner;
 pub mod usecases;
 
+pub use cancel::{CancelReason, CancelToken};
 pub use error::{ErrorCategory, RunError};
 pub use fanout::{run_eval, run_map};
 pub use hooks::{HookKind, HookRunner};

@@ -19,15 +19,17 @@ use tmx_adapters::sink::{FinalStateSink, Format};
 
 use tmx_core::ports::driven::RunStore;
 
+use std::time::Duration;
+
 use tmx_core::ports::driven::{IdGenerator, ProviderMethod};
 use tmx_core::ports::driving::{RunFlow, RunOptions};
 use tmx_core::{
-    Masker, Milliseconds, PipelineState, PreflightTarget, Preflighted, ResolvedFlow, RunConfig,
-    RunError, RunRecord, merged_inputs, preflight,
+    CancelReason, CancelToken, Masker, Milliseconds, PipelineState, PreflightTarget, Preflighted,
+    ResolvedFlow, RunConfig, RunError, RunRecord, merged_inputs, preflight,
 };
 
 use crate::args::RunArgs;
-use crate::commands::lifecycle::{invoke_method, load_provider};
+use crate::commands::lifecycle::{invoke_method, invoke_teardown, load_provider};
 use crate::compose::Composed;
 use crate::config;
 
@@ -80,7 +82,17 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
         Some(store)
     };
 
-    let composed = Composed::new(resolved.base_dir.clone(), format, color, run_store.clone())?;
+    // The run's cancellation token, threaded into every adapter call through the composed ports. The
+    // grace window (`--grace`, default `CANCEL_GRACE_MS`) and, when set, the `--timeout` budget drive
+    // background watchers that request cancellation then hard-stop after the grace — SIGINT does the
+    // same. A run with no `--timeout` still installs the SIGINT watcher, so Ctrl-C always cancels.
+    let cancel = CancelToken::new();
+    let grace_ms = config::resolve_grace_ms(args.grace.as_deref());
+    let timeout_ms = args.timeout.as_deref().and_then(config::parse_duration_ms);
+    spawn_cancellation_watchers(&cancel, timeout_ms, grace_ms);
+
+    let composed = Composed::new(resolved.base_dir.clone(), format, color, run_store.clone())?
+        .with_cancel(cancel.clone());
     let preflighted = preflight(
         &resolved.target,
         composed.preflight_ports(),
@@ -124,7 +136,7 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
         // Best-effort teardown even after a failed deploy (unless `--keep`), then surface exit 5.
         if !args.keep
             && let Err(clean_err) =
-                invoke_method(loaded, &composed, env, ProviderMethod::Clean).await
+                invoke_teardown(loaded, &composed, env, ProviderMethod::Clean).await
         {
             eprintln!(
                 "tmx: warning: clean after a failed deploy also failed: {}",
@@ -153,7 +165,7 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
     if let (Some(loaded), Some(env)) = (&provider_loaded, &environment)
         && !args.no_deploy
         && !args.keep
-        && let Err(clean_err) = invoke_method(loaded, &composed, env, ProviderMethod::Clean).await
+        && let Err(clean_err) = invoke_teardown(loaded, &composed, env, ProviderMethod::Clean).await
     {
         eprintln!("tmx: warning: provider clean failed: {}", clean_err.message);
     }
@@ -177,6 +189,45 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
         emit_final_state(record, format)?;
     }
     record
+}
+
+/// Spawn the background cancellation watchers on the current Tokio runtime (06 §Concurrency,
+/// cancellation, timeouts). Each watcher, on its trigger, *requests* cancellation (the runner stops
+/// dispatching new work), waits the `grace_ms` window (skipped when `0` for an immediate hard stop),
+/// then *hard-cancels* (in-flight adapters are abandoned):
+///
+/// - a **SIGINT** watcher is always installed, so Ctrl-C cancels any run and it exits 130;
+/// - a **`--timeout`** watcher is installed only when `timeout_ms` is set, so an over-budget run exits 124.
+///
+/// The watchers hold `CancelToken` clones (a shared flag), so triggering one is observed by the run
+/// through the composed ports. A run that finishes first simply leaves the pending watchers to be
+/// dropped with the runtime — a never-fired watcher is inert.
+fn spawn_cancellation_watchers(cancel: &CancelToken, timeout_ms: Option<u64>, grace_ms: u64) {
+    let interrupt = cancel.clone();
+    tokio::spawn(async move {
+        // A failed signal registration must not crash the run; it just means Ctrl-C won't cancel.
+        if tokio::signal::ctrl_c().await.is_ok() {
+            escalate(&interrupt, CancelReason::Interrupt, grace_ms).await;
+        }
+    });
+
+    if let Some(ms) = timeout_ms {
+        let timeout = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(ms)).await;
+            escalate(&timeout, CancelReason::Timeout, grace_ms).await;
+        });
+    }
+}
+
+/// Request cancellation for `reason`, wait the grace window (unless `0`), then hard-cancel — the
+/// two-phase escalation both watchers share.
+async fn escalate(cancel: &CancelToken, reason: CancelReason, grace_ms: u64) {
+    cancel.request(reason);
+    if grace_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(grace_ms)).await;
+    }
+    cancel.hard_cancel(reason);
 }
 
 /// Sweep the run store's retention window opportunistically at the start of a run: prune every record

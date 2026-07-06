@@ -8,7 +8,52 @@
 //! lets later tasks widen the search order and the config layers in one place.
 
 use tmx_adapters::sink::Format;
-use tmx_schema::limits::RUN_RETENTION_DEFAULT_DAYS;
+use tmx_schema::limits::{CANCEL_GRACE_MS, RUN_RETENTION_DEFAULT_DAYS};
+
+/// Milliseconds per second — the duration-suffix conversion factor for [`parse_duration_ms`].
+const MILLISECONDS_PER_SECOND: u64 = 1000;
+/// Milliseconds per minute.
+const MILLISECONDS_PER_MINUTE: u64 = 60 * MILLISECONDS_PER_SECOND;
+/// Milliseconds per hour.
+const MILLISECONDS_PER_HOUR: u64 = 60 * MILLISECONDS_PER_MINUTE;
+
+/// Parse a `--timeout`/`--grace` duration string (`500ms`/`30s`/`5m`/`1h`, or a bare integer read as
+/// seconds) into whole milliseconds. Returns `None` for an unparseable value, so the caller can reject
+/// or fall back rather than silently mis-timing a cancellation. Mirrors the runtime `duration` grammar
+/// the task-level `timeout` fields use, kept here so the flag layer parses the same forms.
+#[must_use]
+pub fn parse_duration_ms(raw: &str) -> Option<u64> {
+    let spec = raw.trim();
+    if spec.is_empty() {
+        return None;
+    }
+    let (number, unit_ms) = if let Some(rest) = spec.strip_suffix("ms") {
+        (rest, 1)
+    } else if let Some(rest) = spec.strip_suffix('s') {
+        (rest, MILLISECONDS_PER_SECOND)
+    } else if let Some(rest) = spec.strip_suffix('m') {
+        (rest, MILLISECONDS_PER_MINUTE)
+    } else if let Some(rest) = spec.strip_suffix('h') {
+        (rest, MILLISECONDS_PER_HOUR)
+    } else {
+        (spec, MILLISECONDS_PER_SECOND)
+    };
+    number
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|value| value.saturating_mul(unit_ms))
+}
+
+/// Resolve the cancellation grace window in milliseconds: the `--grace` flag when it parses, else the
+/// [`CANCEL_GRACE_MS`] default. `--grace 0` is honoured (an immediate hard stop); an unparseable value
+/// falls back to the default rather than aborting the run over a stray flag value.
+#[must_use]
+pub fn resolve_grace_ms(grace_flag: Option<&str>) -> u64 {
+    grace_flag
+        .and_then(parse_duration_ms)
+        .unwrap_or(CANCEL_GRACE_MS)
+}
 
 /// The reserved Flow-file stems the cwd search probes, in precedence order: `flow.*` before `tmx.*`
 /// (07 §`tmx run`).
@@ -207,6 +252,61 @@ mod tests {
             resolve_retention_with("  14  "),
             Some(14),
             "surrounding whitespace is trimmed"
+        );
+    }
+
+    #[test]
+    fn parse_duration_ms_covers_every_suffix_and_rejects_garbage() {
+        // Each duration suffix converts to the right millisecond count; a bare integer is seconds.
+        assert_eq!(parse_duration_ms("500ms"), Some(500), "ms is milliseconds");
+        assert_eq!(parse_duration_ms("30s"), Some(30_000), "s is seconds");
+        assert_eq!(parse_duration_ms("5m"), Some(300_000), "m is minutes");
+        assert_eq!(parse_duration_ms("1h"), Some(3_600_000), "h is hours");
+        assert_eq!(
+            parse_duration_ms("2"),
+            Some(2_000),
+            "a bare integer reads as seconds"
+        );
+        assert_eq!(
+            parse_duration_ms("  10s "),
+            Some(10_000),
+            "surrounding whitespace trims"
+        );
+        assert_eq!(parse_duration_ms("0"), Some(0), "zero is a valid duration");
+
+        // Negative space: a non-numeric / empty value is unparseable, never a silent default.
+        assert_eq!(
+            parse_duration_ms("soon"),
+            None,
+            "a non-numeric value is rejected"
+        );
+        assert_eq!(parse_duration_ms(""), None, "an empty value is rejected");
+        assert_eq!(
+            parse_duration_ms("ms"),
+            None,
+            "a bare unit with no number is rejected"
+        );
+    }
+
+    #[test]
+    fn grace_resolves_the_flag_then_the_default_and_honours_zero() {
+        // A parseable `--grace` wins; `--grace 0` is an immediate hard stop (kept, not defaulted);
+        // absent or garbage falls back to the CANCEL_GRACE_MS default.
+        assert_eq!(resolve_grace_ms(Some("2s")), 2_000, "a --grace value wins");
+        assert_eq!(
+            resolve_grace_ms(Some("0")),
+            0,
+            "--grace 0 forces an immediate hard stop, not the default"
+        );
+        assert_eq!(
+            resolve_grace_ms(None),
+            CANCEL_GRACE_MS,
+            "an absent --grace falls back to the CANCEL_GRACE_MS default"
+        );
+        assert_eq!(
+            resolve_grace_ms(Some("nonsense")),
+            CANCEL_GRACE_MS,
+            "an unparseable --grace falls back to the default rather than aborting the run"
         );
     }
 

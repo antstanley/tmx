@@ -117,7 +117,11 @@ impl OsProcessRunner {
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            // Hard-stop on drop: when a run-level cancellation (`--timeout`/SIGINT past the grace
+            // window) abandons the in-flight `run` future, dropping the child kills it rather than
+            // leaving it running detached — the process side of the cancellation hard stop (task 29).
+            .kill_on_drop(true);
         command
     }
 

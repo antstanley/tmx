@@ -87,6 +87,7 @@ fn run_under(mode: ProducesCheck) -> (RunRecord, usize) {
     );
     let loader = FakeSourceLoader::new().with_source("build-flow.yaml", produces_flow());
     let ids = SeededIdGenerator::new();
+    let cancel = tmx_core::CancelToken::new();
 
     let ports = tmx_core::Ports {
         process: &process,
@@ -100,6 +101,7 @@ fn run_under(mode: ProducesCheck) -> (RunRecord, usize) {
         schema: &schema,
         reference_resolver: &refs,
         source_loader: &loader,
+        cancel: &cancel,
     };
     let config = RunConfig {
         check_produces: mode,

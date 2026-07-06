@@ -26,6 +26,7 @@ use tmx_schema::flow::ContextRef;
 use tmx_schema::limits::{FLOW_DEPTH_MAX, TASKS_PER_FLOW_MAX};
 use tmx_schema::task::{FlowWith, Task};
 
+use crate::cancel::{CancelReason, CancelToken};
 use crate::dispatch::{Dispatch, dispatch_task, interp_template, interp_value, is_truthy};
 use crate::error::RunError;
 use crate::hooks::{HookKind, HookRunner};
@@ -73,6 +74,10 @@ pub struct Ports<'a> {
     pub reference_resolver: &'a dyn ReferenceResolver,
     /// Loads a referenced sub-flow's source (for bounded recursion).
     pub source_loader: &'a dyn SourceLoader,
+    /// The run's cancellation token — threaded from the root into every adapter call and awaited
+    /// alongside the work ([`CancelToken::guard`]). A never-triggered token is a no-op, so a run with
+    /// no `--timeout` and no interrupt threads it yet behaves exactly as before.
+    pub cancel: &'a CancelToken,
 }
 
 /// Whether — and how strictly — a task's `produces` schema is checked at run time (04 §`produces`
@@ -137,6 +142,10 @@ pub(crate) struct Outcome {
     pub(crate) pipeline: Pipeline,
     pub(crate) failure: Option<RunError>,
     pub(crate) changed: Vec<String>,
+    /// The cancellation reason, when the run was cancelled (`--timeout` / SIGINT) rather than
+    /// completing or failing on a task. Distinct from `failure`: a cancelled run ends `timed_out` /
+    /// `cancelled`, not `failed`, and does not fire the `error` hook.
+    pub(crate) cancelled: Option<CancelReason>,
 }
 
 /// What one task step produced: it was skipped by its `if` gate, or it produced a normalised output.
@@ -234,21 +243,34 @@ impl PipelineRunner {
             )
             .await?;
 
-        let status = if outcome.failure.is_some() {
-            RunStatus::Failed
-        } else {
-            RunStatus::Ok
+        // A cancelled run ends `timed_out` / `cancelled`; otherwise a task abort is `failed` and a
+        // clean walk is `ok`. Cancellation is terminal on its own — it is not a task `failure`.
+        let status = match outcome.cancelled {
+            Some(reason) => reason.to_status(),
+            None if outcome.failure.is_some() => RunStatus::Failed,
+            None => RunStatus::Ok,
+        };
+
+        // The lifecycle `finally` (`destroy`, and on a real failure `error`) must run *best-effort*
+        // even after a cancelled run — but the run's own token is now (hard-)cancelled, so firing a
+        // hook body through it would insta-cancel the teardown. Fire the teardown hooks through a
+        // fresh, never-triggered token so `destroy` actually runs to completion. Struct-update keeps
+        // every other port handle; only the cancel token is swapped.
+        let teardown_token = CancelToken::new();
+        let teardown_ports = Ports {
+            cancel: &teardown_token,
+            ..ports
         };
 
         // `error` fires when a task aborted the Pipeline (a real failure, not a `continueOnError`
-        // record); it precedes `destroy`, which is the lifecycle's `finally`.
-        if outcome.failure.is_some() {
+        // record, and not a cancellation); it precedes `destroy`, which is the lifecycle's `finally`.
+        if outcome.failure.is_some() && outcome.cancelled.is_none() {
             hooks
                 .fire(
                     HookKind::Error,
                     id,
                     inputs,
-                    ports,
+                    teardown_ports,
                     masker,
                     resolved_secrets,
                     depth,
@@ -262,7 +284,7 @@ impl PipelineRunner {
                 HookKind::Destroy,
                 id,
                 inputs,
-                ports,
+                teardown_ports,
                 masker,
                 resolved_secrets,
                 depth,
@@ -330,8 +352,16 @@ impl PipelineRunner {
             let mut results: Vec<TaskResult> = Vec::with_capacity(count);
             let mut changed: Vec<String> = Vec::new();
             let mut failure: Option<RunError> = None;
+            let mut cancelled: Option<CancelReason> = None;
 
             for (index, task) in flow.tasks.iter().enumerate() {
+                // Cancellation (soft phase): once `--timeout`/SIGINT has requested a stop, the
+                // sequential runner — the degenerate `Scheduler` — ceases to dispatch new work. The
+                // in-flight task (if any) already got its grace window through the guard below.
+                if let Some(reason) = ports.cancel.requested_reason() {
+                    cancelled = Some(reason);
+                    break;
+                }
                 // Invariant: the task index stays in range for the bounded loop.
                 assert!(index < count, "task index must stay in range");
                 let name = task.name.as_deref().unwrap_or("");
@@ -351,8 +381,13 @@ impl PipelineRunner {
                 let started_at = ports.clock.now();
                 let start_ms = ports.clock.now_ms();
 
-                let step = self
-                    .run_step(
+                // Run the step *alongside* the cancellation token: the guard awaits the adapter work
+                // and, once the grace window elapses and hard cancellation fires, resolves to a typed
+                // cancellation error — dropping (hard-stopping) the in-flight work so no cancelled run
+                // is held hostage by an adapter that ignores the grace period.
+                let step = ports
+                    .cancel
+                    .guard(self.run_step(
                         id,
                         task,
                         name,
@@ -363,7 +398,7 @@ impl PipelineRunner {
                         masker,
                         resolved_secrets,
                         depth,
-                    )
+                    ))
                     .await;
 
                 let elapsed = Milliseconds(ports.clock.now_ms().0.saturating_sub(start_ms.0));
@@ -462,6 +497,34 @@ impl PipelineRunner {
                         }
                     }
                     Err(step_err) => {
+                        // A cancellation stopped this task (a hard-stop of the in-flight adapter, or a
+                        // cancellation propagated up from a sub-flow). It is carried by the error's
+                        // category, not the per-task error policy: a cancelled run ends
+                        // `timed_out`/`cancelled` and never fires the `error` hook, regardless of the
+                        // task's `continueOnError`. Emit `task.error` to balance the `task.start` the
+                        // step already emitted, record the cut-off task, then stop.
+                        if let Some(reason) = cancel_reason_of(&step_err) {
+                            emit_event(
+                                ports,
+                                masker,
+                                resolved_secrets,
+                                Event::TaskError {
+                                    name: name.to_string(),
+                                    error: step_err.clone(),
+                                },
+                            )
+                            .await?;
+                            results.push(TaskResult {
+                                name: name.to_string(),
+                                status: TaskStatus::Error,
+                                output: None,
+                                error: Some(step_err),
+                                started_at,
+                                ms: elapsed,
+                            });
+                            cancelled = Some(reason);
+                            break;
+                        }
                         let continue_on_error = task.continue_on_error.unwrap_or(false)
                             || self.config.continue_on_error;
                         failure = self
@@ -487,10 +550,11 @@ impl PipelineRunner {
                 }
             }
 
-            let status = if failure.is_some() {
-                RunStatus::Failed
-            } else {
-                RunStatus::Ok
+            // A cancelled walk ends `timed_out`/`cancelled`; a task abort is `failed`; otherwise `ok`.
+            let status = match cancelled {
+                Some(reason) => reason.to_status(),
+                None if failure.is_some() => RunStatus::Failed,
+                None => RunStatus::Ok,
             };
             let mut pipeline = Pipeline::new(id.clone());
             pipeline.state = builder.into_state();
@@ -500,6 +564,7 @@ impl PipelineRunner {
                 pipeline,
                 failure,
                 changed,
+                cancelled,
             })
         })
     }
@@ -636,6 +701,12 @@ impl PipelineRunner {
                 None,
             )
             .await?;
+        // A cancelled sub-flow propagates the cancellation up as its typed error, so the parent loop
+        // classifies it (by category) as a cancellation and stops the whole run — a nested `flow` can
+        // never swallow a `--timeout`/SIGINT.
+        if let Some(reason) = outcome.cancelled {
+            return Err(reason.to_error());
+        }
         if let Some(failure) = outcome.failure {
             return Err(failure);
         }
@@ -756,6 +827,18 @@ impl PipelineRunner {
 // ---------------------------------------------------------------------------------------------
 // Free helpers — masking-aware emission, context/secret resolution, and name validation.
 // ---------------------------------------------------------------------------------------------
+
+/// Classify a step error as a cancellation, by its [`ErrorCategory`]: `Timeout` → [`CancelReason::Timeout`],
+/// `Interrupt` → [`CancelReason::Interrupt`], anything else `None`. Only [`CancelToken::guard`] (and a
+/// cancellation propagated up from a sub-flow) produces those two categories — a per-task `timeout` is
+/// a `RunFailure` (`task_timeout`), so a genuine task failure is never mis-read as a cancellation.
+fn cancel_reason_of(err: &RunError) -> Option<CancelReason> {
+    match err.category {
+        crate::error::ErrorCategory::Timeout => Some(CancelReason::Timeout),
+        crate::error::ErrorCategory::Interrupt => Some(CancelReason::Interrupt),
+        _ => None,
+    }
+}
 
 /// Emit one event through the sink, redacting its payload and asserting the Masker registry holds
 /// every resolved secret first — the *registry-populated* half of the boundary guarantee.

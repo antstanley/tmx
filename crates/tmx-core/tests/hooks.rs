@@ -58,6 +58,7 @@ struct Bundle {
     refs: FakeReferenceResolver,
     loader: FakeSourceLoader,
     ids: SeededIdGenerator,
+    cancel: tmx_core::CancelToken,
 }
 
 impl Bundle {
@@ -75,6 +76,7 @@ impl Bundle {
             refs: FakeReferenceResolver::new(),
             loader: FakeSourceLoader::new(),
             ids: SeededIdGenerator::new(),
+            cancel: tmx_core::CancelToken::new(),
         }
     }
 
@@ -91,6 +93,7 @@ impl Bundle {
             schema: &self.schema,
             reference_resolver: &self.refs,
             source_loader: &self.loader,
+            cancel: &self.cancel,
         }
     }
 

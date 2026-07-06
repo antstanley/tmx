@@ -17,7 +17,7 @@ use tmx_adapters::provider::{
 };
 
 use tmx_core::ports::driven::{IdGenerator, ProviderMethod, ProviderOutcome};
-use tmx_core::{ErrorCategory, RunConfig, RunError};
+use tmx_core::{ErrorCategory, Ports, RunConfig, RunError};
 use tmx_schema::Environment;
 
 use crate::compose::Composed;
@@ -69,7 +69,43 @@ pub async fn invoke_method(
     environment: &Environment,
     method: ProviderMethod,
 ) -> Result<ProviderOutcome, RunError> {
+    invoke_with(loaded, composed, environment, method, composed.ports()).await
+}
+
+/// Invoke a *teardown* lifecycle method (`clean`/`destroy`) best-effort after a run — through the
+/// never-triggered teardown ports, so a `FlowProvider` teardown completes even when the run itself was
+/// cancelled (`--timeout`/SIGINT) and its own token is hard-cancelled (06 §Ephemeral lifecycle:
+/// "`clean`/`destroy` run best-effort even after a cancelled or failed run").
+///
+/// # Errors
+///
+/// Returns an [`ErrorCategory::Environment`](tmx_core::ErrorCategory) [`RunError`] when the method fails.
+pub async fn invoke_teardown(
+    loaded: &LoadedProviderManifest,
+    composed: &Composed,
+    environment: &Environment,
+    method: ProviderMethod,
+) -> Result<ProviderOutcome, RunError> {
+    invoke_with(
+        loaded,
+        composed,
+        environment,
+        method,
+        composed.teardown_ports(),
+    )
+    .await
+}
+
+/// Drive one provider `method` against `environment` through the given `ports` bundle, minting a fresh
+/// run id so a `FlowProvider`'s recursed run is self-identifying.
+async fn invoke_with(
+    loaded: &LoadedProviderManifest,
+    composed: &Composed,
+    environment: &Environment,
+    method: ProviderMethod,
+    ports: Ports<'_>,
+) -> Result<ProviderOutcome, RunError> {
     let run_id = composed.ids().new_run_id();
-    let provider = build_provider(loaded, composed.ports(), RunConfig::default(), run_id);
+    let provider = build_provider(loaded, ports, RunConfig::default(), run_id);
     provider.invoke(method, environment).await
 }

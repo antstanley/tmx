@@ -17,8 +17,8 @@ use serde_json::{Value, json};
 use tmx_core::ports::driven::{ChatResponse, ProcessOutput, SourceKind};
 use tmx_core::ports::driving::{RunFlow, RunOptions};
 use tmx_core::{
-    EngineRunFlow, ErrorCategory, Event, Masker, Milliseconds, PipelineRunner, Ports, RunConfig,
-    RunError, RunId, RunRecord, RunStatus, TaskStatus, resolve_flow,
+    CancelToken, EngineRunFlow, ErrorCategory, Event, Masker, Milliseconds, PipelineRunner, Ports,
+    RunConfig, RunError, RunId, RunRecord, RunStatus, TaskStatus, resolve_flow,
 };
 use tmx_testkit::{
     FakeChatModel, FakeHttpClient, FakeReferenceResolver, FakeSchemaValidator, FakeSecretResolver,
@@ -53,6 +53,7 @@ struct Bundle {
     refs: FakeReferenceResolver,
     loader: FakeSourceLoader,
     ids: SeededIdGenerator,
+    cancel: CancelToken,
 }
 
 impl Bundle {
@@ -70,6 +71,7 @@ impl Bundle {
             refs: FakeReferenceResolver::new(),
             loader: FakeSourceLoader::new(),
             ids: SeededIdGenerator::new(),
+            cancel: CancelToken::new(),
         }
     }
 
@@ -86,6 +88,7 @@ impl Bundle {
             schema: &self.schema,
             reference_resolver: &self.refs,
             source_loader: &self.loader,
+            cancel: &self.cancel,
         }
     }
 

@@ -116,6 +116,17 @@ pub struct RunArgs {
     /// absent flag checks nothing.
     #[arg(long = "check-produces", value_enum, num_args = 0..=1, default_missing_value = "warn")]
     pub check_produces: Option<CheckProducesArg>,
+
+    /// Cancel the run if it exceeds this wall-clock budget, as a duration (`500ms`/`30s`/`5m`/`1h`, or
+    /// bare seconds). On expiry the run stops dispatching new work, in-flight adapters get the grace
+    /// window, `destroy` fires, and the run exits 124 (06 §Concurrency, cancellation, timeouts).
+    #[arg(long)]
+    pub timeout: Option<String>,
+
+    /// Grace window between a cancel signal (`--timeout` or SIGINT) and the hard stop, as a duration.
+    /// Overrides the `CANCEL_GRACE_MS` default (5s); `--grace 0` forces an immediate hard stop.
+    #[arg(long)]
+    pub grace: Option<String>,
 }
 
 /// Arguments for `tmx runs` — a query against the local run store (07 §Pipeline runs; 08 §Run store).
@@ -349,6 +360,46 @@ mod tests {
                 .expect("--no-store parses"),
         );
         assert!(opted_out.no_store, "--no-store is captured");
+    }
+
+    #[test]
+    fn run_parses_the_timeout_and_grace_flags() {
+        // `--timeout` and `--grace` capture their duration strings; both default absent.
+        let default =
+            run_args(Cli::try_parse_from(["tmx", "run", "flow.yaml"]).expect("bare run parses"));
+        assert!(
+            default.timeout.is_none() && default.grace.is_none(),
+            "cancellation flags default off"
+        );
+
+        let cancelled = run_args(
+            Cli::try_parse_from([
+                "tmx",
+                "run",
+                "flow.yaml",
+                "--timeout",
+                "30s",
+                "--grace",
+                "2s",
+            ])
+            .expect("--timeout/--grace parse"),
+        );
+        assert_eq!(
+            cancelled.timeout.as_deref(),
+            Some("30s"),
+            "--timeout captures its duration"
+        );
+        assert_eq!(
+            cancelled.grace.as_deref(),
+            Some("2s"),
+            "--grace captures its duration"
+        );
+
+        // Negative space: `--timeout` requires a value — a bare flag is a usage error, not a default.
+        assert!(
+            Cli::try_parse_from(["tmx", "run", "flow.yaml", "--timeout"]).is_err(),
+            "--timeout without a value is rejected"
+        );
     }
 
     #[test]

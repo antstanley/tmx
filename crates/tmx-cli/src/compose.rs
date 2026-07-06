@@ -44,7 +44,8 @@ use tmx_core::error::RunError;
 use tmx_core::ports::driven::EventSink;
 use tmx_core::usecases::EngineRunFlow;
 use tmx_core::{
-    AvailableCapabilities, Capability, PipelineRunner, Ports, PreflightPorts, RunConfig,
+    AvailableCapabilities, CancelToken, Capability, PipelineRunner, Ports, PreflightPorts,
+    RunConfig,
 };
 
 /// The wired set of built-in adapters — one owner per driven port, plus the always-on infrastructure
@@ -87,6 +88,14 @@ pub struct Composed {
     // deliberately composed ahead of the task-18 fan-out that consumes it, not accidentally unused.
     #[allow(dead_code)]
     scheduler: SerialScheduler,
+    // The run's cancellation token (task 29): threaded into every adapter call through `ports()`. A
+    // fresh `Composed` owns a never-triggered token, so a run wires nothing until `with_cancel` hands
+    // it the token the CLI's `--timeout`/SIGINT driver triggers.
+    cancel: CancelToken,
+    // A separate, never-triggered token for best-effort teardown (`ports()` vs `teardown_ports()`):
+    // provider `clean`/`destroy` after a *cancelled* run must complete, so it runs through a token the
+    // cancellation never touches, rather than the run's own (now hard-cancelled) `cancel`.
+    teardown: CancelToken,
 }
 
 impl Composed {
@@ -134,7 +143,18 @@ impl Composed {
             loader: FileSourceLoader::new(),
             ids: Uuidv7Generator::new(),
             scheduler: SerialScheduler::new(),
+            cancel: CancelToken::new(),
+            teardown: CancelToken::new(),
         })
+    }
+
+    /// Install the run's cancellation `token` (the one the CLI's `--timeout`/SIGINT driver triggers),
+    /// so every adapter call `ports()` lends the core is threaded with it. Without this, a `Composed`
+    /// carries a never-triggered token and cancellation is inert (the shape `tmx env`/tests want).
+    #[must_use]
+    pub fn with_cancel(mut self, token: CancelToken) -> Self {
+        self.cancel = token;
+        self
     }
 
     /// The full driven-port bundle the runner is generic over — every port as a `&dyn` handle.
@@ -152,6 +172,18 @@ impl Composed {
             schema: &self.schema,
             reference_resolver: &self.references,
             source_loader: &self.loader,
+            cancel: &self.cancel,
+        }
+    }
+
+    /// The port bundle for best-effort teardown — identical to [`ports`](Self::ports) but threaded
+    /// with the never-triggered `teardown` token, so provider `clean`/`destroy` after a *cancelled*
+    /// run runs to completion instead of being insta-cancelled by the run's own token.
+    #[must_use]
+    pub fn teardown_ports(&self) -> Ports<'_> {
+        Ports {
+            cancel: &self.teardown,
+            ..self.ports()
         }
     }
 
