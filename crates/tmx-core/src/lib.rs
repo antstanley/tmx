@@ -26,6 +26,7 @@ pub mod error;
 pub mod fanout;
 pub mod hooks;
 pub mod interpolate;
+pub mod lint;
 pub mod mask;
 pub mod matcher;
 pub mod merge;
@@ -54,4 +55,4 @@ pub use preflight::{
 };
 pub use resolve::{merged_inputs, resolve_flow};
 pub use runner::{PipelineRunner, Ports, ProducesCheck, RunConfig, RunOutcome};
-pub use usecases::EngineRunFlow;
+pub use usecases::{EngineLintFlow, EngineRunFlow};

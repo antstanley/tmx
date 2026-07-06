@@ -6,5 +6,6 @@
 
 pub mod env;
 pub mod lifecycle;
+pub mod lint;
 pub mod run;
 pub mod runs;

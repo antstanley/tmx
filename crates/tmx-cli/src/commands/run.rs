@@ -92,7 +92,15 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
         eprintln!("warning: {}", warning.message);
     }
 
-    let config = RunConfig::default();
+    // The runtime `produces` conformance mode: `--check-produces` selects warn/strict; absent leaves
+    // the default (Off), so outputs are not checked at run time (04 §`produces` conformance).
+    let config = RunConfig {
+        check_produces: args
+            .check_produces
+            .map(crate::args::CheckProducesArg::to_check)
+            .unwrap_or_default(),
+        ..RunConfig::default()
+    };
 
     // The ephemeral-environment lifecycle wraps the pipeline (06 §Ephemeral lifecycle):
     //   default        → deploy → run → clean

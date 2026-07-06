@@ -25,10 +25,48 @@ pub struct Cli {
 pub enum Command {
     /// Run a Flow end to end: load, preflight, execute, and print the masked final state to stdout.
     Run(RunArgs),
+    /// Statically lint a Flow: resolution + dataflow analysis beyond schema (07 §`tmx lint`).
+    Lint(LintArgs),
     /// Drive a Flow's environment provider through its lifecycle methods (07 §`tmx env`).
     Env(EnvArgs),
     /// Query the local run store: list, show, dump state/logs, prune, or remove runs (07 §Pipeline runs).
     Runs(RunsArgs),
+}
+
+/// The runtime `produces`-conformance mode selected by `--check-produces[=warn|strict]` (04 §`produces`
+/// conformance) — the CLI mirror of [`tmx_core::ProducesCheck`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CheckProducesArg {
+    /// A `produces` mismatch is a non-blocking warning; the run continues (the bare-flag default).
+    Warn,
+    /// A `produces` mismatch fails the task.
+    Strict,
+}
+
+impl CheckProducesArg {
+    /// Map the CLI arg to the engine [`ProducesCheck`](tmx_core::ProducesCheck) the runner honours.
+    #[must_use]
+    pub fn to_check(self) -> tmx_core::ProducesCheck {
+        match self {
+            CheckProducesArg::Warn => tmx_core::ProducesCheck::Warn,
+            CheckProducesArg::Strict => tmx_core::ProducesCheck::Strict,
+        }
+    }
+}
+
+/// Arguments for `tmx lint` — the deeper static pass (07 §`tmx lint`; 03 §`lint`).
+#[derive(Debug, Default, Parser)]
+pub struct LintArgs {
+    /// The Flow to lint: a file, or resolved by the same search order as `tmx run` when omitted.
+    pub flow: Option<String>,
+
+    /// Explicit Flow file, taking precedence over the positional argument and `$TMX_FLOW`.
+    #[arg(short = 'f', long = "file")]
+    pub file: Option<String>,
+
+    /// Promote every lint warning to an error, so any finding exits 3 (03 §`lint`).
+    #[arg(long)]
+    pub strict: bool,
 }
 
 /// Arguments for `tmx run` — the core surface plus the ephemeral-environment lifecycle flags
@@ -72,6 +110,12 @@ pub struct RunArgs {
     /// Do not record this run in the local run store (`./.tmx/runs/`): no snapshot, no event log.
     #[arg(long = "no-store")]
     pub no_store: bool,
+
+    /// Check each task's output against its `produces` schema at run time (04 §`produces` conformance):
+    /// a bare `--check-produces` warns on a mismatch, `--check-produces=strict` fails the task, and an
+    /// absent flag checks nothing.
+    #[arg(long = "check-produces", value_enum, num_args = 0..=1, default_missing_value = "warn")]
+    pub check_produces: Option<CheckProducesArg>,
 }
 
 /// Arguments for `tmx runs` — a query against the local run store (07 §Pipeline runs; 08 §Run store).
@@ -346,6 +390,75 @@ mod tests {
             Cli::try_parse_from(["tmx", "runs", "teleport"]).is_err(),
             "an unknown runs sub-action is rejected"
         );
+    }
+
+    #[test]
+    fn run_parses_the_check_produces_flag_in_its_three_states() {
+        // Absent → None (off); bare `--check-produces` → warn; `--check-produces=strict` → strict.
+        let absent =
+            run_args(Cli::try_parse_from(["tmx", "run", "flow.yaml"]).expect("bare run parses"));
+        assert!(
+            absent.check_produces.is_none(),
+            "an absent flag leaves the check off"
+        );
+
+        let bare = run_args(
+            Cli::try_parse_from(["tmx", "run", "flow.yaml", "--check-produces"])
+                .expect("bare --check-produces parses"),
+        );
+        assert_eq!(
+            bare.check_produces,
+            Some(CheckProducesArg::Warn),
+            "a bare --check-produces defaults to warn"
+        );
+        assert_eq!(
+            bare.check_produces.map(CheckProducesArg::to_check),
+            Some(tmx_core::ProducesCheck::Warn),
+            "warn maps to the engine ProducesCheck::Warn"
+        );
+
+        let strict = run_args(
+            Cli::try_parse_from(["tmx", "run", "flow.yaml", "--check-produces=strict"])
+                .expect("--check-produces=strict parses"),
+        );
+        assert_eq!(
+            strict.check_produces.map(CheckProducesArg::to_check),
+            Some(tmx_core::ProducesCheck::Strict),
+            "=strict maps to ProducesCheck::Strict"
+        );
+
+        // Negative space: an unknown value is a usage error, never a silent default.
+        assert!(
+            Cli::try_parse_from(["tmx", "run", "flow.yaml", "--check-produces=loose"]).is_err(),
+            "an unknown --check-produces value is rejected"
+        );
+    }
+
+    #[test]
+    fn lint_parses_a_flow_and_the_strict_flag() {
+        // `tmx lint flow.yaml --strict` captures the flow and sets strict; strict defaults off.
+        let cli = Cli::try_parse_from(["tmx", "lint", "flow.yaml", "--strict"])
+            .expect("lint --strict parses");
+        match cli.command {
+            Command::Lint(args) => {
+                assert_eq!(
+                    args.flow.as_deref(),
+                    Some("flow.yaml"),
+                    "the flow is captured"
+                );
+                assert!(args.strict, "--strict is set");
+            }
+            other => panic!("expected a lint command, got {other:?}"),
+        }
+
+        let plain = Cli::try_parse_from(["tmx", "lint"]).expect("bare lint parses");
+        match plain.command {
+            Command::Lint(args) => {
+                assert!(args.flow.is_none(), "no positional flow");
+                assert!(!args.strict, "strict defaults off");
+            }
+            other => panic!("expected a lint command, got {other:?}"),
+        }
     }
 
     #[test]

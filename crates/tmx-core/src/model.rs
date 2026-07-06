@@ -339,6 +339,18 @@ pub enum Severity {
     Info,
 }
 
+impl Severity {
+    /// The stable lowercase label for this severity — the token a reporter prefixes a finding with.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+            Severity::Info => "info",
+        }
+    }
+}
+
 /// A finding from `validate` or `lint` — the `Diagnostic` `$def`.
 ///
 /// Validation diagnostics come from the `SchemaValidator`; lint diagnostics from static

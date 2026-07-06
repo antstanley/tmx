@@ -61,6 +61,33 @@ fn main() {
                 exit_code(&error)
             }
         },
+        Command::Lint(lint_args) => match runtime.block_on(commands::lint::execute(lint_args)) {
+            Ok(report) => {
+                // Findings are human-facing progress on stderr; stdout stays empty (lint produces no
+                // machine data). A blocking report — an error finding, or any finding under `--strict`
+                // — is exit 3 (the same depth `validate` exits at); a clean report is exit 0.
+                for diagnostic in &report.diagnostics {
+                    eprintln!(
+                        "{}: {} [{}]",
+                        diagnostic.severity.as_str(),
+                        diagnostic.message,
+                        diagnostic.code
+                    );
+                }
+                if report.is_blocking() {
+                    exit_code(&RunError::validation(
+                        "lint_failed",
+                        "lint found blocking issues",
+                    ))
+                } else {
+                    EXIT_SUCCESS
+                }
+            }
+            Err(error) => {
+                eprintln!("tmx: {error}");
+                exit_code(&error)
+            }
+        },
         Command::Env(env_args) => match runtime.block_on(commands::env::execute(env_args)) {
             Ok(summary) => {
                 // Machine data on stdout: the provider lifecycle summary as one JSON object.
