@@ -153,7 +153,11 @@ impl Composed {
             .with(Capability::Process)
             .with(Capability::Http)
             .with(Capability::File)
-            .with(Capability::Secret);
+            .with(Capability::Secret)
+            // The `EnvironmentProvider` port is wired unconditionally (task 25): both the
+            // `BinaryProvider` and `FlowProvider` adapters are always compiled, so a Flow declaring an
+            // `environment.provider` clears the capability check rather than failing preflight.
+            .with(Capability::Provider);
         #[cfg(feature = "store")]
         let caps = caps.with(Capability::Store);
         #[cfg(feature = "chat")]
@@ -223,6 +227,10 @@ mod tests {
         let caps = composed.available_capabilities();
         assert!(caps.has(Capability::Process), "exec/run is wired and real");
         assert!(caps.has(Capability::Secret), "env secrets are wired");
+        assert!(
+            caps.has(Capability::Provider),
+            "the environment provider port is wired unconditionally"
+        );
         assert!(caps.has(Capability::Http), "fetch is wired and real");
         assert!(
             caps.has(Capability::File),

@@ -415,6 +415,29 @@ pub enum ProviderMethod {
     Destroy,
 }
 
+impl ProviderMethod {
+    /// Every method, in lifecycle order — the closed vocabulary the manifest's `methods` object names.
+    pub const ALL: [ProviderMethod; 4] = [
+        ProviderMethod::Bootstrap,
+        ProviderMethod::Deploy,
+        ProviderMethod::Clean,
+        ProviderMethod::Destroy,
+    ];
+
+    /// The stable manifest key for this method (`bootstrap`/`deploy`/`clean`/`destroy`) — the name a
+    /// [`ProviderMethods`](tmx_schema::ProviderMethods) body is looked up under. Exhaustive `match`,
+    /// no wildcard, so a new method cannot ship without a key.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ProviderMethod::Bootstrap => "bootstrap",
+            ProviderMethod::Deploy => "deploy",
+            ProviderMethod::Clean => "clean",
+            ProviderMethod::Destroy => "destroy",
+        }
+    }
+}
+
 /// The outcome of a provider method — the result the [`EnvironmentProvider`] returns.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProviderOutcome {

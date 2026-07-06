@@ -19,12 +19,14 @@ pub mod environment;
 pub mod flow;
 pub mod limits;
 pub mod matcher;
+pub mod provider;
 pub mod task;
 
 pub use context::{Context, EnvMap, Hook, HookUse, Hooks, SecretSource, SecretValue};
 pub use environment::{Environment, Resources};
 pub use flow::{ContextRef, EnvironmentRef, Flow, InputSpec, TaskEntry, Tasks};
 pub use matcher::MatcherName;
+pub use provider::{ProviderManifest, ProviderMethodBody, ProviderMethods, ProviderType};
 pub use task::{
     AssertWith, Assertion, ChatCompletionWith, ChatMessage, Duration, EvalThreshold, EvalWith,
     ExecWith, FetchWith, FileWith, FlowWith, MapWith, RunWith, Scorer, StoreWith, Task, TaskWith,

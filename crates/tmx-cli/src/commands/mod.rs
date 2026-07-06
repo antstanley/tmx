@@ -4,4 +4,6 @@
 //! returns the terminal record (or a typed error) for `main` to render and map to an exit code. Task
 //! 17 lands [`run`]; the remaining commands arrive with their tasks.
 
+pub mod env;
+pub mod lifecycle;
 pub mod run;

@@ -15,6 +15,7 @@ pub mod clock;
 pub mod deny;
 pub mod idgen;
 pub mod loader;
+pub mod provider;
 pub mod report;
 pub mod resolve;
 pub mod scheduler;

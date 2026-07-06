@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use tmx_adapters::loader::detect_source_kind;
 
-use tmx_core::ports::driven::IdGenerator;
+use tmx_core::ports::driven::{IdGenerator, ProviderMethod};
 use tmx_core::ports::driving::{RunFlow, RunOptions};
 use tmx_core::{
     Masker, Milliseconds, PipelineState, PreflightTarget, Preflighted, ResolvedFlow, RunConfig,
@@ -20,6 +20,7 @@ use tmx_core::{
 };
 
 use crate::args::RunArgs;
+use crate::commands::lifecycle::{invoke_method, load_provider};
 use crate::compose::Composed;
 use crate::config;
 
@@ -65,7 +66,40 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
     }
 
     let config = RunConfig::default();
-    match &resolved.file_reference {
+
+    // The ephemeral-environment lifecycle wraps the pipeline (06 §Ephemeral lifecycle):
+    //   default        → deploy → run → clean
+    //   --keep         → deploy → run
+    //   --no-deploy    →          run           (reuse a standing environment)
+    //   --local        →          run           (no provider at all)
+    // A provider method that fails is an `environment` error (exit 5), distinct from a run failure.
+    let environment = preflighted.flow.environment.clone();
+    let provider_loaded = match &environment {
+        Some(env) if !args.local && env.provider.is_some() => {
+            Some(load_provider(env, &composed).await?)
+        }
+        _ => None,
+    };
+
+    // Deploy up front, unless a standing environment is reused (`--no-deploy`).
+    if let (Some(loaded), Some(env)) = (&provider_loaded, &environment)
+        && !args.no_deploy
+        && let Err(deploy_err) = invoke_method(loaded, &composed, env, ProviderMethod::Deploy).await
+    {
+        // Best-effort teardown even after a failed deploy (unless `--keep`), then surface exit 5.
+        if !args.keep
+            && let Err(clean_err) =
+                invoke_method(loaded, &composed, env, ProviderMethod::Clean).await
+        {
+            eprintln!(
+                "tmx: warning: clean after a failed deploy also failed: {}",
+                clean_err.message
+            );
+        }
+        return Err(deploy_err);
+    }
+
+    let record = match &resolved.file_reference {
         // A single file runs through the RunFlow use case (the reference-driven pipeline).
         Some(reference) => {
             let use_case = composed.run_flow(config);
@@ -77,7 +111,19 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
         // Flow directly. This mirrors the RunFlow use case's own tail (mint id → run → mask final
         // state → build the record) for the target the reference-driven use case cannot express.
         None => execute_preflighted(&preflighted, &composed, config).await,
+    };
+
+    // Clean best-effort even after a failed run (the context `destroy` hook has already fired inside
+    // the pipeline). Skipped by `--keep` (leave it up) and `--no-deploy` (we never provisioned it).
+    if let (Some(loaded), Some(env)) = (&provider_loaded, &environment)
+        && !args.no_deploy
+        && !args.keep
+        && let Err(clean_err) = invoke_method(loaded, &composed, env, ProviderMethod::Clean).await
+    {
+        eprintln!("tmx: warning: provider clean failed: {}", clean_err.message);
     }
+
+    record
 }
 
 /// Execute an already-preflighted, assembled [`ResolvedFlow`] directly through the runner, returning
@@ -329,6 +375,7 @@ mod tests {
         RunArgs {
             flow: flow.map(str::to_string),
             file: file.map(str::to_string),
+            ..RunArgs::default()
         }
     }
 

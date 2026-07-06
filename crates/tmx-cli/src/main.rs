@@ -60,6 +60,18 @@ fn main() {
                 exit_code(&error)
             }
         },
+        Command::Env(env_args) => match runtime.block_on(commands::env::execute(env_args)) {
+            Ok(summary) => {
+                // Machine data on stdout: the provider lifecycle summary as one JSON object.
+                print_json(&summary);
+                EXIT_SUCCESS
+            }
+            Err(error) => {
+                // A failed provider method is an `environment` error → exit 5 (07 §Exit codes).
+                eprintln!("tmx: {error}");
+                exit_code(&error)
+            }
+        },
     };
     std::process::exit(code);
 }
@@ -75,6 +87,15 @@ fn print_final_state(record: &RunRecord) {
         Ok(text) => println!("{text}"),
         // A state that fails to serialise is unexpected (it is a JSON object by construction); emit an
         // empty object so stdout still carries valid JSON rather than nothing or a partial fragment.
+        Err(_) => println!("{{}}"),
+    }
+}
+
+/// Write a JSON value as one pretty object to **stdout** — the machine-data channel for `tmx env`'s
+/// provider lifecycle summary, mirroring `tmx run`'s final-state contract (07 §stdout / stderr).
+fn print_json(value: &Value) {
+    match serde_json::to_string_pretty(value) {
+        Ok(text) => println!("{text}"),
         Err(_) => println!("{{}}"),
     }
 }
