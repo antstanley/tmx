@@ -14,5 +14,17 @@ authors.workspace = true
 tmx-core = { path = "../tmx-core" }
 tmx-schema = { path = "../tmx-schema" }
 
+# The source-loader stack (task 13). `serde_json` is the one JSON model every format lands in;
+# `preserve_order` makes `Value::Object` an insertion-ordered `IndexMap` so the task *map* form keeps
+# its source key order end-to-end (03 §Source loading — "feed keys to an order-preserving map").
+# `serde_yaml_ng` / `toml` are the YAML / TOML front-ends, each deserialising straight into the same
+# `serde_json::Value`; JSON and JSONC ride `serde_json` directly. `async-trait` is the same
+# trait-support macro the ports carry — it restores object safety for the async `SourceLoader` /
+# `ReferenceResolver` methods so they can be injected as `dyn Port`.
+serde_json = { workspace = true, features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
+toml = "0.8"
+async-trait = "0.1"
+
 [lints]
 workspace = true

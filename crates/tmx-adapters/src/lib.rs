@@ -10,3 +10,6 @@
 //!
 //! Depends on `tmx-core` (the port traits it implements) and `tmx-schema`. The adapters themselves
 //! arrive in tasks 13–24.
+
+pub mod loader;
+pub mod resolve;
