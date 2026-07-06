@@ -23,8 +23,8 @@ use serde_json::Value;
 use tmx_schema::EnvMap;
 use tmx_schema::context::{Context, SecretValue};
 use tmx_schema::flow::ContextRef;
-use tmx_schema::limits::{FLOW_DEPTH_MAX, TASKS_PER_FLOW_MAX};
-use tmx_schema::task::{FlowWith, Task};
+use tmx_schema::limits::{FANOUT_WIDTH_MAX, FLOW_DEPTH_MAX, TASKS_PER_FLOW_MAX};
+use tmx_schema::task::{FlowWith, Task, TaskWith};
 
 use crate::cancel::{CancelReason, CancelToken};
 use crate::dispatch::{Dispatch, dispatch_task, interp_template, interp_value, is_truthy};
@@ -34,8 +34,8 @@ use crate::interpolate::evaluate;
 use crate::mask::Masker;
 use crate::merge::{StateBuilder, normalize_output};
 use crate::model::{
-    Event, Milliseconds, Pipeline, ResolvedFlow, RunId, RunStatus, Scope, Severity, TaskResult,
-    TaskStatus, Timestamp,
+    Event, Milliseconds, Pipeline, PipelineState, ResolvedFlow, RunId, RunStatus, Scope, Severity,
+    TaskResult, TaskStatus, Timestamp,
 };
 use crate::ports::driven::{
     ChatModel, Clock, EventSink, FileSystem, HttpClient, ObjectStore, ProcessRunner,
@@ -115,10 +115,22 @@ pub struct RunConfig {
 /// **never fires lifecycle hooks of its own** — so a runner with `in_hook == true` walks its tasks
 /// without firing `create`/`change`/`destroy`/`error`. This is the structural half of the
 /// no-hook-inside-a-hook guarantee; [`HookRunner::fire`] carries the asserted backstop.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone)]
 pub struct PipelineRunner {
     config: RunConfig,
     in_hook: bool,
+    /// The `--matrix` combination bound as `${{ matrix.<key> }}` for every task of the run — and,
+    /// because it is carried on the runner, for its sub-flows and hook bodies too (07 §Matrix sugar).
+    /// An empty object when the run carries no matrix, so a matrix-free run reads `matrix` as `{}`
+    /// exactly as before this flag existed. Not `Copy` (a `Value` is heap-backed), so the runner is
+    /// cloned, never bit-copied.
+    matrix: Value,
+}
+
+/// The empty `matrix` binding a matrix-free run carries — an object, never `null`, so
+/// `${{ matrix }}` is always a bound namespace (never an undefined-key resolution error).
+fn empty_matrix() -> Value {
+    Value::Object(serde_json::Map::new())
 }
 
 /// The terminal result of a [`PipelineRunner::run`]: the [`Pipeline`] plus the names of the tasks
@@ -162,6 +174,7 @@ impl PipelineRunner {
         Self {
             config,
             in_hook: false,
+            matrix: empty_matrix(),
         }
     }
 
@@ -172,7 +185,21 @@ impl PipelineRunner {
         Self {
             config,
             in_hook: true,
+            matrix: empty_matrix(),
         }
+    }
+
+    /// Bind a `--matrix` combination for this run: every task's `${{ matrix.<key> }}` reads from
+    /// `matrix` (07 §Matrix sugar). A non-object `matrix` is treated as no binding (an empty object),
+    /// so the `matrix` namespace is always a bound object.
+    #[must_use]
+    pub fn with_matrix(mut self, matrix: Value) -> Self {
+        self.matrix = if matrix.is_object() {
+            matrix
+        } else {
+            empty_matrix()
+        };
+        self
     }
 
     /// Run `flow` end to end: emit `run.start`, walk the tasks, emit `run.finish`, and return the
@@ -181,7 +208,9 @@ impl PipelineRunner {
     /// `id` is the run id (minted by the caller via the `IdGenerator` port), `inputs` the resolved
     /// `inputs.*` scope object, `masker` the run's secret registry (populated as tasks resolve their
     /// secrets), `resolved_secrets` the accumulating list of resolved secret values (for the
-    /// registry-populated boundary assertion), and `depth` the `flow`-recursion depth (0 at the top).
+    /// registry-populated boundary assertion), `seed` the optional prior Pipeline state to start the
+    /// task loop from (`--state-in`; `None` starts from `{}`), and `depth` the `flow`-recursion depth
+    /// (0 at the top).
     ///
     /// A run whose task fails without `continueOnError` returns `Ok` with a `failed` status and the
     /// failing [`TaskResult`] recorded — the terminal record, not an `Err`. `Err` is reserved for a
@@ -196,6 +225,7 @@ impl PipelineRunner {
         ports: Ports<'_>,
         masker: &mut Masker,
         resolved_secrets: &mut Vec<String>,
+        seed: Option<&PipelineState>,
         depth: u32,
     ) -> Result<RunOutcome, RunError> {
         validate_task_names(flow)?;
@@ -215,7 +245,12 @@ impl PipelineRunner {
         // The hook runner reads this Flow's `context.hooks`; it is a no-op when no hook is declared or
         // when this runner is itself a hook body (`in_hook`), so a hook-free flow runs exactly as
         // before hooks existed.
-        let hooks = HookRunner::new(flow.context.as_ref(), self.config, self.in_hook);
+        let hooks = HookRunner::new(
+            flow.context.as_ref(),
+            self.config,
+            self.in_hook,
+            self.matrix.clone(),
+        );
 
         // `create` fires once on entry to `running`, right after `run.start`.
         hooks
@@ -238,6 +273,7 @@ impl PipelineRunner {
                 ports,
                 masker,
                 resolved_secrets,
+                seed,
                 depth,
                 Some(&hooks),
             )
@@ -334,6 +370,7 @@ impl PipelineRunner {
         ports: Ports<'a>,
         masker: &'a mut Masker,
         resolved_secrets: &'a mut Vec<String>,
+        seed: Option<&'a PipelineState>,
         depth: u32,
         hooks: Option<&'a HookRunner<'a>>,
     ) -> Pin<Box<dyn Future<Output = Result<Outcome, RunError>> + Send + 'a>> {
@@ -345,9 +382,14 @@ impl PipelineRunner {
                 count as u64 <= u64::from(TASKS_PER_FLOW_MAX),
                 "task count must be within TASKS_PER_FLOW_MAX"
             );
-            let mut builder = match self.config.max_state_size_bytes {
-                Some(cap) => StateBuilder::with_cap(cap),
-                None => StateBuilder::new(),
+            // Seed the state from a prior run (`--state-in`) when supplied, so a sliced continuation
+            // reads earlier tasks' output via `${{ tasks.NAME.field }}`; otherwise start from `{}`.
+            // A narrowed `--max-state-size` cap is honoured in either case.
+            let mut builder = match (seed, self.config.max_state_size_bytes) {
+                (Some(state), Some(cap)) => StateBuilder::from_state_with_cap(state.clone(), cap),
+                (Some(state), None) => StateBuilder::from_state(state.clone()),
+                (None, Some(cap)) => StateBuilder::with_cap(cap),
+                (None, None) => StateBuilder::new(),
             };
             let mut results: Vec<TaskResult> = Vec::with_capacity(count);
             let mut changed: Vec<String> = Vec::new();
@@ -599,7 +641,7 @@ impl PipelineRunner {
                 item: None,
                 case: None,
                 output: None,
-                matrix: &empty,
+                matrix: &self.matrix,
             };
             // `if` accepts both a bare expression (`inputs.enabled`) and a `${{ … }}`-wrapped one; a
             // wrapped form is interpolated (a lone `${{ expr }}` keeps its value's type), a bare form
@@ -627,7 +669,7 @@ impl PipelineRunner {
             item: None,
             case: None,
             output: None,
-            matrix: &empty,
+            matrix: &self.matrix,
         };
 
         emit_event(
@@ -697,6 +739,7 @@ impl PipelineRunner {
                 ports,
                 masker,
                 resolved_secrets,
+                None,
                 depth + 1,
                 None,
             )
@@ -1008,4 +1051,373 @@ fn validate_task_names(flow: &ResolvedFlow) -> Result<(), RunError> {
         "task names must be unique (backstop)"
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Task slicing and matrix lowering — the pure `tmx run` flag transforms over a `ResolvedFlow`
+// (07 §`tmx run` run flags, §Matrix sugar). Both are pure: they rewrite the resolved task list /
+// produce the matrix cross-product; the CLI applies them before handing the flow to the runner.
+// ---------------------------------------------------------------------------------------------
+
+/// The task-slicing selection built from `--from`/`--until`/`--only`/`--skip` (07 §`tmx run`).
+///
+/// Slicing narrows the sequential task list while preserving source order; it pairs with `--state-in`
+/// so a later task still reads a prior task's state via `${{ tasks.NAME.field }}`. Every named task
+/// must exist in the flow — an unknown name is a typed `unknown_task` error, never a silent no-op.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskSlice {
+    /// Keep only tasks at or after this task (inclusive). `None` starts at the first task.
+    pub from: Option<String>,
+    /// Keep only tasks at or before this task (inclusive). `None` ends at the last task.
+    pub until: Option<String>,
+    /// When non-empty, keep only tasks whose name is listed here.
+    pub only: Vec<String>,
+    /// Drop every task whose name is listed here.
+    pub skip: Vec<String>,
+}
+
+impl TaskSlice {
+    /// Whether this selection narrows anything (any of the four fields is set).
+    #[must_use]
+    pub fn is_noop(&self) -> bool {
+        self.from.is_none() && self.until.is_none() && self.only.is_empty() && self.skip.is_empty()
+    }
+}
+
+/// Apply a [`TaskSlice`] to a [`ResolvedFlow`], returning a flow whose `tasks` are the selected
+/// subset in source order (07 §Slicing pairs with `--state-in`).
+///
+/// The transforms compose in a fixed order: the `from`/`until` range first (a contiguous window),
+/// then `only` (intersection), then `skip` (removal). Every named task must exist; an unknown name in
+/// any of the four fields is a typed `unknown_task` [`RunError::validation`].
+///
+/// # Errors
+///
+/// Returns `unknown_task` when `from`/`until`/`only`/`skip` names a task the flow does not declare.
+pub fn slice_tasks(flow: ResolvedFlow, slice: &TaskSlice) -> Result<ResolvedFlow, RunError> {
+    if slice.is_noop() {
+        return Ok(flow);
+    }
+    let names: std::collections::HashSet<&str> = flow
+        .tasks
+        .iter()
+        .filter_map(|t| t.name.as_deref())
+        .collect();
+    // Every referenced task must exist — an unknown name is the negative space of "slice by name".
+    for referenced in slice
+        .from
+        .iter()
+        .chain(slice.until.iter())
+        .chain(slice.only.iter())
+        .chain(slice.skip.iter())
+    {
+        if !names.contains(referenced.as_str()) {
+            return Err(RunError::validation(
+                "unknown_task",
+                format!("--only/--skip/--from/--until names unknown task {referenced:?}"),
+            ));
+        }
+    }
+
+    let from_index = match &slice.from {
+        Some(name) => flow
+            .tasks
+            .iter()
+            .position(|t| t.name.as_deref() == Some(name)),
+        None => Some(0),
+    };
+    let until_index = match &slice.until {
+        Some(name) => flow
+            .tasks
+            .iter()
+            .position(|t| t.name.as_deref() == Some(name)),
+        None => Some(flow.tasks.len().saturating_sub(1)),
+    };
+    // Both indices resolve (the existence check above guarantees it); an empty flow with no from/until
+    // simply yields no tasks.
+    let (lo, hi) = match (from_index, until_index) {
+        (Some(lo), Some(hi)) if flow.tasks.is_empty() => (lo, hi),
+        (Some(lo), Some(hi)) => (lo, hi),
+        _ => (1, 0), // an empty selection (lo > hi)
+    };
+
+    let only: std::collections::HashSet<&str> = slice.only.iter().map(String::as_str).collect();
+    let skip: std::collections::HashSet<&str> = slice.skip.iter().map(String::as_str).collect();
+
+    let ResolvedFlow {
+        name,
+        description,
+        version,
+        environment,
+        context,
+        inputs,
+        tasks,
+    } = flow;
+    let selected: Vec<Task> = tasks
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| *index >= lo && *index <= hi)
+        .map(|(_, task)| task)
+        .filter(|task| {
+            let name = task.name.as_deref().unwrap_or("");
+            (only.is_empty() || only.contains(name)) && !skip.contains(name)
+        })
+        .collect();
+
+    Ok(ResolvedFlow {
+        name,
+        description,
+        version,
+        environment,
+        context,
+        inputs,
+        tasks: selected,
+    })
+}
+
+/// Whether `flow` declares an authored `map` task at the top level — the guard for "an authored `map`
+/// wins over `--matrix`" (07 §Matrix sugar): the CLI never rewrites or wraps an explicit `map`.
+#[must_use]
+pub fn flow_has_map(flow: &ResolvedFlow) -> bool {
+    flow.tasks
+        .iter()
+        .any(|task| matches!(task.with, TaskWith::Map(_)))
+}
+
+/// Lower `--matrix` axes into the bounded cross-product of combinations (07 §Matrix sugar).
+///
+/// Each axis is `key → [v1, v2, …]`; the result is one JSON object per combination binding every
+/// `${{ matrix.<key> }}`, in a deterministic order (axes in declaration order, each varying fastest to
+/// slowest right-to-left). The cross-product width is bounded by [`FANOUT_WIDTH_MAX`] — an over-wide
+/// matrix is a typed `fanout_too_wide` error, not a silent truncation. An axis with an empty value
+/// list collapses the product to zero combinations (there is nothing to bind).
+///
+/// # Errors
+///
+/// Returns `fanout_too_wide` when the cross-product exceeds [`FANOUT_WIDTH_MAX`] combinations.
+pub fn matrix_combinations(axes: &IndexMap<String, Vec<Value>>) -> Result<Vec<Value>, RunError> {
+    if axes.is_empty() {
+        return Ok(Vec::new());
+    }
+    // The product width, computed with saturating arithmetic so an enormous matrix cannot overflow
+    // before the bound check rejects it.
+    let mut width: u64 = 1;
+    for values in axes.values() {
+        width = width.saturating_mul(values.len() as u64);
+    }
+    if width > u64::from(FANOUT_WIDTH_MAX) {
+        return Err(RunError::run_failure(
+            "fanout_too_wide",
+            format!(
+                "--matrix cross-product is {width} combinations, exceeding the {FANOUT_WIDTH_MAX} fan-out width limit"
+            ),
+        ));
+    }
+    // A zero-width product (an empty axis) yields no combinations.
+    if width == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Build the cross-product by folding each axis over the running set of partial combinations.
+    let mut combos: Vec<serde_json::Map<String, Value>> = vec![serde_json::Map::new()];
+    for (key, values) in axes {
+        let mut next: Vec<serde_json::Map<String, Value>> =
+            Vec::with_capacity(combos.len() * values.len());
+        for base in &combos {
+            for value in values {
+                let mut extended = base.clone();
+                extended.insert(key.clone(), value.clone());
+                next.push(extended);
+            }
+        }
+        combos = next;
+    }
+    // Paired assertion: the built count matches the computed product width.
+    assert_eq!(
+        combos.len() as u64,
+        width,
+        "the built combination count equals the computed cross-product width"
+    );
+    let out: Vec<Value> = combos.into_iter().map(Value::Object).collect();
+    assert!(
+        out.len() as u64 <= u64::from(FANOUT_WIDTH_MAX),
+        "the matrix cross-product stays within FANOUT_WIDTH_MAX"
+    );
+    Ok(out)
+}
+
+#[cfg(test)]
+mod slice_matrix_tests {
+    use super::*;
+    use serde_json::json;
+    use tmx_schema::task::{ExecWith, TaskWith};
+
+    /// A minimal named `exec` task fixture for slicing tests.
+    fn exec_task(name: &str) -> Task {
+        Task {
+            kind: None,
+            name: Some(name.to_string()),
+            description: None,
+            if_condition: None,
+            secrets: None,
+            context: None,
+            context_strategy: None,
+            context_precedence: None,
+            output: None,
+            produces: None,
+            continue_on_error: None,
+            with: TaskWith::Exec(ExecWith {
+                command: "noop".to_string(),
+                args: None,
+                shell: None,
+                cwd: None,
+                env: None,
+                timeout: None,
+            }),
+        }
+    }
+
+    fn flow_of(names: &[&str]) -> ResolvedFlow {
+        ResolvedFlow {
+            name: Some("f".to_string()),
+            description: None,
+            version: None,
+            environment: None,
+            context: None,
+            inputs: IndexMap::new(),
+            tasks: names.iter().map(|n| exec_task(n)).collect(),
+        }
+    }
+
+    fn task_names(flow: &ResolvedFlow) -> Vec<String> {
+        flow.tasks
+            .iter()
+            .map(|t| t.name.clone().unwrap_or_default())
+            .collect()
+    }
+
+    #[test]
+    fn from_until_selects_an_inclusive_contiguous_window() {
+        // `--from b --until d` keeps b,c,d — the inclusive range in source order.
+        let flow = flow_of(&["a", "b", "c", "d", "e"]);
+        let slice = TaskSlice {
+            from: Some("b".to_string()),
+            until: Some("d".to_string()),
+            ..TaskSlice::default()
+        };
+        let sliced = slice_tasks(flow, &slice).expect("the window resolves");
+        assert_eq!(task_names(&sliced), vec!["b", "c", "d"], "inclusive b..=d");
+        assert!(!slice.is_noop(), "a set slice is not a no-op");
+    }
+
+    #[test]
+    fn only_and_skip_filter_within_the_window() {
+        // `--only a,c,e --skip c` keeps a,e (only intersects, skip removes), order preserved.
+        let flow = flow_of(&["a", "b", "c", "d", "e"]);
+        let slice = TaskSlice {
+            only: vec!["a".to_string(), "c".to_string(), "e".to_string()],
+            skip: vec!["c".to_string()],
+            ..TaskSlice::default()
+        };
+        let sliced = slice_tasks(flow, &slice).expect("only/skip resolve");
+        assert_eq!(task_names(&sliced), vec!["a", "e"], "only∩ minus skip");
+    }
+
+    #[test]
+    fn a_noop_slice_returns_the_flow_unchanged() {
+        // The empty selection is an identity — every task survives, in order.
+        let flow = flow_of(&["a", "b"]);
+        let slice = TaskSlice::default();
+        assert!(slice.is_noop(), "an empty selection is a no-op");
+        let sliced = slice_tasks(flow, &slice).expect("a no-op slice is Ok");
+        assert_eq!(task_names(&sliced), vec!["a", "b"], "identity");
+    }
+
+    #[test]
+    fn an_unknown_task_name_is_a_typed_error() {
+        // Negative space: naming a task the flow does not declare is `unknown_task`, not a silent skip.
+        let flow = flow_of(&["a", "b"]);
+        let slice = TaskSlice {
+            from: Some("ghost".to_string()),
+            ..TaskSlice::default()
+        };
+        let err = slice_tasks(flow, &slice).expect_err("an unknown task is rejected");
+        assert_eq!(err.code, "unknown_task", "the unknown-task code");
+        assert!(
+            err.message.contains("ghost"),
+            "the message names the missing task, got {:?}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn matrix_two_axes_yield_the_full_cross_product() {
+        // `a=1,2` × `b=x,y` → four combinations, each binding both keys.
+        let mut axes: IndexMap<String, Vec<Value>> = IndexMap::new();
+        axes.insert("a".to_string(), vec![json!(1), json!(2)]);
+        axes.insert("b".to_string(), vec![json!("x"), json!("y")]);
+        let combos = matrix_combinations(&axes).expect("the cross-product builds");
+        assert_eq!(combos.len(), 4, "2×2 is a four-way cross-product");
+        assert_eq!(
+            combos[0],
+            json!({ "a": 1, "b": "x" }),
+            "the first combination binds both axes"
+        );
+        assert_eq!(
+            combos[3],
+            json!({ "a": 2, "b": "y" }),
+            "the last combination is the far corner of the product"
+        );
+    }
+
+    #[test]
+    fn matrix_no_axes_and_an_empty_axis_yield_no_combinations() {
+        // No axes → no combinations (a matrix-free run); an empty axis collapses the product to zero.
+        assert!(
+            matrix_combinations(&IndexMap::new())
+                .expect("no axes is Ok")
+                .is_empty(),
+            "no axes yields no combinations"
+        );
+        let mut axes: IndexMap<String, Vec<Value>> = IndexMap::new();
+        axes.insert("a".to_string(), vec![json!(1)]);
+        axes.insert("b".to_string(), Vec::new());
+        assert!(
+            matrix_combinations(&axes)
+                .expect("an empty axis is Ok")
+                .is_empty(),
+            "an empty axis collapses the cross-product to zero"
+        );
+    }
+
+    #[test]
+    fn an_over_width_matrix_is_fanout_too_wide() {
+        // Negative space: a cross-product beyond FANOUT_WIDTH_MAX is rejected, not truncated.
+        let big = (0..=FANOUT_WIDTH_MAX).map(|i| json!(i)).collect::<Vec<_>>();
+        let mut axes: IndexMap<String, Vec<Value>> = IndexMap::new();
+        axes.insert("a".to_string(), big);
+        axes.insert("b".to_string(), vec![json!(1), json!(2)]);
+        let err = matrix_combinations(&axes).expect_err("an over-width matrix is rejected");
+        assert_eq!(err.code, "fanout_too_wide", "the width error code");
+    }
+
+    #[test]
+    fn flow_has_map_detects_an_authored_map() {
+        // `flow_has_map` is the authored-`map`-wins guard for `--matrix`.
+        let plain = flow_of(&["a"]);
+        assert!(!flow_has_map(&plain), "a map-free flow has no authored map");
+
+        let mut mapped = flow_of(&["fan"]);
+        mapped.tasks[0].with = TaskWith::Map(
+            serde_json::from_value(json!({
+                "items": ["a"],
+                "task": { "type": "exec", "with": { "command": "noop" } },
+            }))
+            .expect("valid MapWith"),
+        );
+        assert!(
+            flow_has_map(&mapped),
+            "a flow with a map task is detected so --matrix is ignored"
+        );
+    }
 }

@@ -178,12 +178,20 @@ impl StateBuilder {
     /// capped at the default [`STATE_SIZE_MAX_BYTES`].
     #[must_use]
     pub fn from_state(state: PipelineState) -> Self {
+        Self::from_state_with_cap(state, STATE_SIZE_MAX_BYTES)
+    }
+
+    /// Start from a seeded [`PipelineState`] with an explicit cap, clamped to at most the hard
+    /// [`STATE_SIZE_MAX_BYTES`] ceiling — the `--state-in` + `--max-state-size` combination, so a
+    /// resumed run still honours a narrowed cap on its subsequent merges.
+    #[must_use]
+    pub fn from_state_with_cap(state: PipelineState, cap_bytes: u64) -> Self {
         let state = state.into_value();
         let size_bytes = canonical_len(&state);
         Self {
             state,
             size_bytes,
-            cap_bytes: STATE_SIZE_MAX_BYTES,
+            cap_bytes: cap_bytes.min(STATE_SIZE_MAX_BYTES),
         }
     }
 

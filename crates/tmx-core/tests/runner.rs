@@ -17,8 +17,9 @@ use serde_json::{Value, json};
 use tmx_core::ports::driven::{ChatResponse, ProcessOutput, SourceKind};
 use tmx_core::ports::driving::{RunFlow, RunOptions};
 use tmx_core::{
-    CancelToken, EngineRunFlow, ErrorCategory, Event, Masker, Milliseconds, PipelineRunner, Ports,
-    RunConfig, RunError, RunId, RunRecord, RunStatus, TaskStatus, resolve_flow,
+    CancelToken, EngineRunFlow, ErrorCategory, Event, Masker, Milliseconds, PipelineRunner,
+    PipelineState, Ports, RunConfig, RunError, RunId, RunRecord, RunStatus, TaskStatus,
+    resolve_flow,
 };
 use tmx_testkit::{
     FakeChatModel, FakeHttpClient, FakeReferenceResolver, FakeSchemaValidator, FakeSecretResolver,
@@ -505,6 +506,7 @@ fn runner_flow_task_past_the_depth_bound_yields_flow_depth_exceeded() {
         bundle.ports(),
         &mut masker,
         &mut secrets,
+        None,
         depth_ceiling,
     ))
     .expect("the run itself completes (the failure is recorded, not returned)");
@@ -554,6 +556,7 @@ fn runner_rejects_missing_and_duplicate_task_names() {
             bundle.ports(),
             &mut masker,
             &mut secrets,
+            None,
             0,
         ))
         .map(|_| ())
@@ -583,5 +586,110 @@ fn runner_rejects_missing_and_duplicate_task_names() {
         duplicate.category,
         ErrorCategory::Validation,
         "a bad name set is a validation failure"
+    );
+}
+
+#[test]
+fn runner_binds_the_matrix_combination_into_every_task_scope() {
+    // Task 30 (O1): a `--matrix` combination bound on the runner is visible as `${{ matrix.<key> }}`
+    // to the run's tasks — an `assert` that reads both axes holds only because the binding threaded in.
+    let bundle = Bundle::new();
+    let flow = resolve_flow(json!({
+        "name": "m",
+        "tasks": [ { "name": "check", "type": "assert", "with": { "assertions": [
+            { "actual": "${{ matrix.os }}", "matcher": "toEqual", "expected": "linux" },
+            { "actual": "${{ matrix.arch }}", "matcher": "toEqual", "expected": "arm64" }
+        ] } } ]
+    }))
+    .expect("the flow resolves");
+    let id = RunId::new("018f8c7e-9b2a-7def-8123-456789abcdef").expect("valid id");
+
+    let run_with = |matrix: Option<Value>| -> RunStatus {
+        let runner = match matrix {
+            Some(binding) => PipelineRunner::new(RunConfig::default()).with_matrix(binding),
+            None => PipelineRunner::new(RunConfig::default()),
+        };
+        let mut masker = Masker::new();
+        let mut secrets = Vec::new();
+        block_on_ready(runner.run(
+            &id,
+            &flow,
+            &json!({}),
+            bundle.ports(),
+            &mut masker,
+            &mut secrets,
+            None,
+            0,
+        ))
+        .expect("the run itself completes")
+        .pipeline
+        .status
+    };
+
+    assert_eq!(
+        run_with(Some(json!({ "os": "linux", "arch": "arm64" }))),
+        RunStatus::Ok,
+        "the assert reading ${{ matrix.os }}/${{ matrix.arch }} holds under the bound combination"
+    );
+    assert_eq!(
+        run_with(Some(json!({ "os": "mac", "arch": "arm64" }))),
+        RunStatus::Failed,
+        "a different combination fails the same assert — the binding, not a constant, is read"
+    );
+}
+
+#[test]
+fn runner_seeds_prior_state_so_a_sliced_continuation_reads_it() {
+    // Task 30 (O1): a `--state-in` seed starts the task loop from prior state, so a later (sliced) task
+    // reads an earlier task's output via `${{ tasks.NAME.field }}`; without the seed the read is absent.
+    let bundle = Bundle::new();
+    let flow = resolve_flow(json!({
+        "name": "s",
+        "tasks": [ { "name": "check", "type": "assert", "with": { "assertions": [
+            { "actual": "${{ tasks.build.sha }}", "matcher": "toEqual", "expected": "abc123" }
+        ] } } ]
+    }))
+    .expect("the flow resolves");
+    let seed = PipelineState::new(json!({ "build": { "sha": "abc123" } })).expect("valid state");
+    let id = RunId::new("018f8c7e-9b2a-7def-8123-456789abcdef").expect("valid id");
+
+    let run_with = |seed: Option<&PipelineState>| -> (RunStatus, Value) {
+        let runner = PipelineRunner::new(RunConfig::default());
+        let mut masker = Masker::new();
+        let mut secrets = Vec::new();
+        let outcome = block_on_ready(runner.run(
+            &id,
+            &flow,
+            &json!({}),
+            bundle.ports(),
+            &mut masker,
+            &mut secrets,
+            seed,
+            0,
+        ))
+        .expect("the run itself completes");
+        (
+            outcome.pipeline.status,
+            outcome.pipeline.state.as_value().clone(),
+        )
+    };
+
+    let (seeded_status, seeded_state) = run_with(Some(&seed));
+    assert_eq!(
+        seeded_status,
+        RunStatus::Ok,
+        "the resumed task reads the seeded prior state and its assert holds"
+    );
+    assert_eq!(
+        seeded_state.get("build"),
+        Some(&json!({ "sha": "abc123" })),
+        "the seeded state persists into the run's final state"
+    );
+
+    let (unseeded_status, _) = run_with(None);
+    assert_eq!(
+        unseeded_status,
+        RunStatus::Failed,
+        "without the seed the prior-state read is absent and the assert fails"
     );
 }

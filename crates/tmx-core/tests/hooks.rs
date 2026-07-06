@@ -351,7 +351,12 @@ fn destroy_fires_through_the_status_independent_finally_path() {
         "hooks": { "destroy": [ { "name": "on_destroy", "type": "exec", "with": { "command": "echo d" } } ] }
     }))
     .expect("the context parses");
-    let hooks = HookRunner::new(Some(&ctx), RunConfig::default(), false);
+    let hooks = HookRunner::new(
+        Some(&ctx),
+        RunConfig::default(),
+        false,
+        serde_json::json!({}),
+    );
     let id = RunId::new(A_RUN_ID).expect("valid id");
     let mut masker = Masker::new();
     let mut secrets = Vec::new();
@@ -415,7 +420,12 @@ fn firing_a_hook_while_already_inside_one_trips_the_assertion() {
     }))
     .expect("the context parses");
     // `in_hook = true`: this runner stands for one already executing a hook body.
-    let hooks = HookRunner::new(Some(&ctx), RunConfig::default(), true);
+    let hooks = HookRunner::new(
+        Some(&ctx),
+        RunConfig::default(),
+        true,
+        serde_json::json!({}),
+    );
     let id = RunId::new(A_RUN_ID).expect("valid id");
     let mut masker = Masker::new();
     let mut secrets = Vec::new();
@@ -443,7 +453,12 @@ fn an_over_limit_hook_body_is_rejected() {
         .collect();
     let ctx: Context = serde_json::from_value(json!({ "hooks": { "create": tasks } }))
         .expect("the context parses");
-    let hooks = HookRunner::new(Some(&ctx), RunConfig::default(), false);
+    let hooks = HookRunner::new(
+        Some(&ctx),
+        RunConfig::default(),
+        false,
+        serde_json::json!({}),
+    );
     let id = RunId::new(A_RUN_ID).expect("valid id");
     let mut masker = Masker::new();
     let mut secrets = Vec::new();

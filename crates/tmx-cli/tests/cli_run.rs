@@ -580,3 +580,321 @@ fn a_secret_is_redacted_under_every_format() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+// =====================================================================================
+// Task 30 — the full `tmx run` flag surface, driven end to end through the real binary.
+// =====================================================================================
+
+/// Run the binary with arbitrary `args` from working directory `cwd`, capturing the result.
+fn run_binary(cwd: &Path, args: &[&str]) -> Output {
+    let output = Command::new(env!("CARGO_BIN_EXE_tmx"))
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .expect("the tmx binary runs");
+    Output {
+        code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+const DRY_RUN_YAML: &str = r#"name: sidefx
+tasks:
+  - name: touch
+    type: file
+    with:
+      operation: write
+      path: SENTINEL_PATH
+      content: made
+"#;
+
+#[test]
+fn dry_run_prints_the_plan_and_executes_no_task() {
+    // O1: `--dry-run` resolves + validates + prints the plan and runs nothing (no file-write side
+    // effect); the same flow run for real does write the sentinel — the difference is the point.
+    let dir = temp_dir("dry-run");
+    let sentinel = dir.join("sentinel.txt");
+    let flow = write(
+        &dir,
+        "flow.yaml",
+        &DRY_RUN_YAML.replace("SENTINEL_PATH", sentinel.to_str().expect("utf8 path")),
+    );
+    let flow_arg = flow.to_str().expect("utf8 path");
+
+    let out = run_binary(&dir, &["run", flow_arg, "--no-store", "--dry-run"]);
+    assert_eq!(out.code, Some(0), "dry-run exits 0; stderr: {}", out.stderr);
+    assert!(
+        out.stdout.contains("\"dryRun\": true"),
+        "the plan prints to stdout, got {:?}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("touch"),
+        "the plan lists the task by name"
+    );
+    assert!(
+        !sentinel.exists(),
+        "dry-run must not run the file-write task"
+    );
+
+    let real = run_binary(&dir, &["run", flow_arg, "--no-store"]);
+    assert_eq!(
+        real.code,
+        Some(0),
+        "the real run exits 0; stderr: {}",
+        real.stderr
+    );
+    assert!(
+        sentinel.exists(),
+        "the real run does run the file-write task"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+const MATRIX_YAML: &str = r#"name: mtx
+tasks:
+  - name: rec
+    type: file
+    with:
+      operation: append
+      path: OUT_PATH
+      content: "${{ matrix.a }}-${{ matrix.b }}|"
+"#;
+
+#[test]
+fn matrix_runs_the_full_cross_product_binding_each_axis() {
+    // O1: `--matrix a=1,2 --matrix b=x,y` runs the four-way cross-product, each combination binding
+    // `${{ matrix.a }}`/`${{ matrix.b }}` — observed by appending each combination to a shared file.
+    let dir = temp_dir("matrix");
+    let out_file = dir.join("out.txt");
+    let flow = write(
+        &dir,
+        "flow.yaml",
+        &MATRIX_YAML.replace("OUT_PATH", out_file.to_str().expect("utf8 path")),
+    );
+    let flow_arg = flow.to_str().expect("utf8 path");
+
+    let out = run_binary(
+        &dir,
+        &[
+            "run",
+            flow_arg,
+            "--no-store",
+            "--matrix",
+            "a=1,2",
+            "--matrix",
+            "b=x,y",
+        ],
+    );
+    assert_eq!(
+        out.code,
+        Some(0),
+        "the matrix run exits 0; stderr: {}",
+        out.stderr
+    );
+
+    let recorded = std::fs::read_to_string(&out_file).expect("the append file exists");
+    for combo in ["1-x", "1-y", "2-x", "2-y"] {
+        assert!(
+            recorded.contains(combo),
+            "the cross-product ran combination {combo}, got {recorded:?}"
+        );
+    }
+    assert_eq!(
+        recorded.matches('|').count(),
+        4,
+        "exactly four combinations ran, got {recorded:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+const MATRIX_ASSERT_YAML: &str = r#"name: mtxfail
+tasks:
+  - name: gate
+    type: assert
+    with:
+      assertions:
+        - actual: "${{ matrix.a }}"
+          matcher: toBe
+          expected: 2
+"#;
+
+#[test]
+fn matrix_with_a_failing_combination_exits_one_even_when_a_later_one_passes() {
+    // Regression (07 §Matrix sugar, §Exit codes): a matrix lowers to a `map`, so a combination that
+    // *completes* with a failed `assert` is a run failure of the whole matrix. `--matrix a=1,2` asserts
+    // `${{ matrix.a }} == 2`, so a=1 fails and a=2 passes. A later passing combination must NEVER mask
+    // the earlier failure: the process must exit 1, not 0.
+    let dir = temp_dir("matrix-fail");
+    let flow = write(&dir, "flow.yaml", MATRIX_ASSERT_YAML);
+    let flow_arg = flow.to_str().expect("utf8 path");
+
+    let out = run_binary(&dir, &["run", flow_arg, "--no-store", "--matrix", "a=1,2"]);
+    assert_eq!(
+        out.code,
+        Some(1),
+        "a matrix with a failing combination exits 1 even when a later one passes; stderr: {}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("failed"),
+        "the failed combination is reported on stderr, got {:?}",
+        out.stderr
+    );
+
+    // The mirror case: every combination passing exits 0, so the exit-1 above is caused by the failure,
+    // not by the matrix path itself.
+    let ok = run_binary(&dir, &["run", flow_arg, "--no-store", "--matrix", "a=2,2"]);
+    assert_eq!(
+        ok.code,
+        Some(0),
+        "a matrix whose every combination passes exits 0; stderr: {}",
+        ok.stderr
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+const SLICE_YAML: &str = r#"name: slice
+tasks:
+  - name: build
+    type: file
+    with:
+      operation: write
+      path: BUILD_PATH
+      content: ran
+  - name: verify
+    type: assert
+    with:
+      assertions:
+        - actual: "${{ tasks.build.sha }}"
+          matcher: toEqual
+          expected: abc
+"#;
+
+#[test]
+fn from_slice_paired_with_state_in_resumes_reading_prior_state() {
+    // O1: `--from verify --state-in seed.json` runs only `verify`, which reads the seeded prior
+    // `build.sha` via `${{ tasks.build.sha }}`; the sliced-out `build` task never runs.
+    let dir = temp_dir("slice");
+    let build_sentinel = dir.join("build.txt");
+    let flow = write(
+        &dir,
+        "flow.yaml",
+        &SLICE_YAML.replace("BUILD_PATH", build_sentinel.to_str().expect("utf8 path")),
+    );
+    let flow_arg = flow.to_str().expect("utf8 path");
+    let seed = write(&dir, "seed.json", "{\"build\":{\"sha\":\"abc\"}}");
+    let seed_arg = seed.to_str().expect("utf8 path");
+
+    let out = run_binary(
+        &dir,
+        &[
+            "run",
+            flow_arg,
+            "--no-store",
+            "--from",
+            "verify",
+            "--state-in",
+            seed_arg,
+        ],
+    );
+    assert_eq!(
+        out.code,
+        Some(0),
+        "the resumed slice reads the seeded prior state and exits 0; stderr: {}",
+        out.stderr
+    );
+    assert!(
+        !build_sentinel.exists(),
+        "the sliced-out `build` task never runs"
+    );
+
+    // Negative space: the same slice without the seed cannot read the prior state — non-zero exit.
+    std::fs::remove_file(&build_sentinel).ok();
+    let unseeded = run_binary(&dir, &["run", flow_arg, "--no-store", "--from", "verify"]);
+    assert_ne!(
+        unseeded.code,
+        Some(0),
+        "without --state-in the resumed slice cannot read prior state; stderr: {}",
+        unseeded.stderr
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+const INPUT_YAML: &str = r#"name: inp
+inputs:
+  count:
+    type: number
+tasks:
+  - name: verify
+    type: assert
+    with:
+      assertions:
+        - actual: "${{ inputs.count }}"
+          matcher: toEqual
+          expected: 3
+"#;
+
+#[test]
+fn typed_input_is_coerced_to_its_declared_type() {
+    // O1: `--input count=3` coerces the string to the declared `number`, so the assert comparing it
+    // against the number `3` holds; a non-numeric value fails coercion (negative space, exit 3).
+    let dir = temp_dir("input");
+    let flow = write(&dir, "flow.yaml", INPUT_YAML);
+    let flow_arg = flow.to_str().expect("utf8 path");
+
+    let out = run_binary(&dir, &["run", flow_arg, "--no-store", "--input", "count=3"]);
+    assert_eq!(
+        out.code,
+        Some(0),
+        "the coerced numeric input satisfies the assert; stderr: {}",
+        out.stderr
+    );
+
+    let bad = run_binary(
+        &dir,
+        &["run", flow_arg, "--no-store", "--input", "count=lots"],
+    );
+    assert_eq!(
+        bad.code,
+        Some(3),
+        "a value that does not coerce to the declared type is a validation error (exit 3); stderr: {}",
+        bad.stderr
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn state_out_dumps_the_final_state_for_a_later_state_in() {
+    // O1: `--state-out` writes the masked final state to a file, which then seeds a follow-up run's
+    // `--state-in` — the round trip a resumed slice relies on.
+    let dir = temp_dir("state-out");
+    let flow = write(&dir, "flow.yaml", PASSING_YAML);
+    let flow_arg = flow.to_str().expect("utf8 path");
+    let out = dir.join("state.json");
+    let out_arg = out.to_str().expect("utf8 path");
+
+    let run = run_binary(
+        &dir,
+        &["run", flow_arg, "--no-store", "--state-out", out_arg],
+    );
+    assert_eq!(run.code, Some(0), "the run exits 0; stderr: {}", run.stderr);
+    assert!(out.exists(), "--state-out wrote the final-state file");
+
+    let dumped: Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).expect("read state-out"))
+            .expect("the dumped state is valid JSON");
+    assert!(dumped.is_object(), "the dumped state is a JSON object");
+    assert!(
+        dumped.get("build").is_some(),
+        "the dumped state carries the build task's output, got {dumped:?}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

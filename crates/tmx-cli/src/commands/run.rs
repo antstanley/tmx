@@ -1,12 +1,18 @@
-//! `tmx run` — the first end-to-end path (07 §`tmx run`).
+//! `tmx run` — the end-to-end path and its full flag surface (07 §`tmx run`, §Matrix sugar).
 //!
 //! Resolves the Flow reference (the `--file` → positional → `$TMX_FLOW` → `./flow.{…}`/`./tmx.{…}` →
 //! folder-layout order), preflights it (fail-fast validation + the capability check, 03 §Preflight
-//! flow), then executes it and returns the terminal [`RunRecord`]. A single file runs through the
-//! [`RunFlow`] use case (the reference-driven load → resolve → run → mask pipeline); a directory /
-//! folder layout — which has no single file reference — runs the assembled, preflighted Flow directly
-//! through the [`PipelineRunner`]. Either way the final Pipeline state comes back masked, and `main`
-//! renders it to stdout and maps the outcome to an exit code.
+//! flow), then *prepares* the resolved flow from the run flags — coerces `--input`/`--inputs-file`
+//! values to their declared `type`, applies `--env` overrides, slices the task list
+//! (`--only`/`--skip`/`--from`/`--until`), and seeds prior state from `--state-in` (re-validated on
+//! read) — and executes it through the [`PipelineRunner`]. `--matrix` lowers to a bounded `map`
+//! cross-product (each combination its own full run binding `${{ matrix.<key> }}`; an authored `map`
+//! wins); `--dry-run` prints the plan and executes nothing; `--watch` re-runs on a source change.
+//! Both a single file and a directory / folder-layout target take this one execution path (the
+//! preflight already yields the resolved flow for either). The final Pipeline state comes back masked;
+//! `--state-out` dumps it, `main` renders it to stdout and maps the outcome to an exit code. The
+//! reference-driven [`RunFlow`](tmx_core::ports::driving::RunFlow) use case remains for library/HTTP
+//! hosts; the CLI prepares the flow itself so the whole flag surface applies uniformly.
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -21,11 +27,15 @@ use tmx_core::ports::driven::RunStore;
 
 use std::time::Duration;
 
-use tmx_core::ports::driven::{IdGenerator, ProviderMethod};
-use tmx_core::ports::driving::{RunFlow, RunOptions};
+use indexmap::IndexMap;
+use serde_json::Value;
+use tmx_schema::limits::CONCURRENCY_MAX;
+
+use tmx_core::ports::driven::{Clock, IdGenerator, ProviderMethod};
 use tmx_core::{
-    CancelReason, CancelToken, Masker, Milliseconds, PipelineState, PreflightTarget, Preflighted,
-    ResolvedFlow, RunConfig, RunError, RunRecord, merged_inputs, preflight,
+    CancelReason, CancelToken, Masker, Milliseconds, PipelineState, PreflightTarget, ResolvedFlow,
+    RunConfig, RunError, RunRecord, RunStatus, TaskSlice, flow_has_map, matrix_combinations,
+    merged_inputs, preflight, slice_tasks,
 };
 
 use crate::args::RunArgs;
@@ -54,13 +64,33 @@ pub struct ResolvedTarget {
 /// A run that *completes* with a failed task returns `Ok` with a `failed`-status record — the failure
 /// is data on the record, mapped to exit 1 by `main`, not an `Err`.
 pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
+    if args.watch {
+        watch(&args).await
+    } else {
+        run_once(&args).await
+    }
+}
+
+/// Run the Flow once, end to end, honouring the full flag surface: coerced inputs, `--env` overrides,
+/// `--state-in` seed, task slicing, `--dry-run`, `--matrix` cross-product, and the
+/// concurrency/continue-on-error/max-state-size engine flags. Returns the terminal [`RunRecord`] — for
+/// `--matrix`, the first *failing* combination's record when any combination failed (so a later passing
+/// combination never masks an earlier failure), else the last combination's record (each combination is
+/// its own full run).
+///
+/// # Errors
+///
+/// Returns a [`RunError`] for an unresolved Flow, a malformed artifact, a coercion/validation failure
+/// of an input or a `--state-in` file, an unknown sliced task name, an over-wide matrix, a missing
+/// capability, or any failure the run itself surfaces.
+async fn run_once(args: &RunArgs) -> Result<RunRecord, RunError> {
     let cwd = std::env::current_dir().map_err(|e| {
         RunError::resolution(
             "cwd_unavailable",
             format!("could not read the current working directory: {e}"),
         )
     })?;
-    let resolved = resolve_target(&args, &cwd, config::env_flow())?;
+    let resolved = resolve_target(args, &cwd, config::env_flow())?;
 
     // Resolve the reporter surface: the stdout format (flag → TMX_FORMAT → TTY default) and whether
     // the stderr progress is coloured. The stdout TTY check drives pretty-vs-json; the stderr TTY
@@ -104,23 +134,50 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
         eprintln!("warning: {}", warning.message);
     }
 
-    // The runtime `produces` conformance mode: `--check-produces` selects warn/strict; absent leaves
-    // the default (Off), so outputs are not checked at run time (04 §`produces` conformance).
+    // `--concurrency` is the global cap for `map`/`eval` fan-out; a request above the engine ceiling is
+    // rejected up front (the same bound `run_map`/`run_eval` enforce), so the flag is validated at the
+    // boundary rather than silently accepted.
+    check_concurrency(args.concurrency)?;
+
+    // The engine flags the run flags shape: `--continue-on-error` forces the global policy,
+    // `--check-produces` selects the `produces` mode (absent → Off), and `--max-state-size` narrows
+    // the state cap (clamped to the hard ceiling by the runner).
     let config = RunConfig {
+        continue_on_error: args.continue_on_error,
         check_produces: args
             .check_produces
             .map(crate::args::CheckProducesArg::to_check)
             .unwrap_or_default(),
-        ..RunConfig::default()
+        max_state_size_bytes: args.max_state_size,
     };
 
-    // The ephemeral-environment lifecycle wraps the pipeline (06 §Ephemeral lifecycle):
+    // Prepare the flow from the run flags: coerce the supplied inputs to their declared `type`, apply
+    // `--env` overrides onto the context, slice the task list (`--only`/`--skip`/`--from`/`--until`),
+    // and seed prior state from `--state-in` (re-validated on read).
+    let inputs = coerce_inputs(args, &preflighted.flow)?;
+    let flow = apply_env_overrides(preflighted.flow.clone(), &args.env)?;
+    let flow = slice_tasks(flow, &build_slice(args))?;
+    let seed = read_state_in(args.state_in.as_deref())?;
+
+    // `--matrix` lowers to a bounded `map` cross-product binding `${{ matrix.<key> }}` per combination
+    // — unless an authored `map` wins, in which case it is ignored with a stderr warning. An empty
+    // list means a single, matrix-free run.
+    let combos = resolve_matrix(args, &flow)?;
+
+    // `--dry-run` / `-n`: resolve + validate + print the plan; execute nothing (no env lifecycle, no
+    // task side effect, no store write).
+    if args.dry_run {
+        let id = composed.ids().new_run_id();
+        return dry_run_plan(id, &flow, &inputs, &combos, format);
+    }
+
+    // The ephemeral-environment lifecycle wraps the run(s) (06 §Ephemeral lifecycle):
     //   default        → deploy → run → clean
     //   --keep         → deploy → run
     //   --no-deploy    →          run           (reuse a standing environment)
     //   --local        →          run           (no provider at all)
     // A provider method that fails is an `environment` error (exit 5), distinct from a run failure.
-    let environment = preflighted.flow.environment.clone();
+    let environment = flow.environment.clone();
     let provider_loaded = match &environment {
         Some(env) if !args.local && env.provider.is_some() => {
             Some(load_provider(env, &composed).await?)
@@ -146,22 +203,58 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
         return Err(deploy_err);
     }
 
-    let record = match &resolved.file_reference {
-        // A single file runs through the RunFlow use case (the reference-driven pipeline).
-        Some(reference) => {
-            let use_case = composed.run_flow(config);
-            use_case
-                .run(reference, serde_json::json!({}), RunOptions::default())
-                .await
-        }
-        // A directory / folder layout has no single file reference; run the assembled, preflighted
-        // Flow directly. This mirrors the RunFlow use case's own tail (mint id → run → mask final
-        // state → build the record) for the target the reference-driven use case cannot express.
-        None => execute_preflighted(&preflighted, &composed, config).await,
+    // Run once per matrix combination (or exactly once with no matrix binding, `None`). Each
+    // combination is a full run with its own record and store entry. A matrix lowers to a `map`, so a
+    // combination that *completes* with a non-`Ok` status (a failed `assert`, a missed `eval`
+    // threshold) is a run failure of the whole matrix (07 §Matrix sugar, §Exit codes) — a later
+    // passing combination must never mask it. `last` tracks the most recent record; `first_failure`
+    // latches the *first* combination that failed (a hard `Err`, or an `Ok` record whose status is
+    // not `Ok`). The returned record — and thus the process exit code — is that first failure when any
+    // combination failed, else the last record, so `--matrix a=1,2` where a=1 fails and a=2 passes
+    // exits 1, not 0.
+    let combinations: Vec<Option<Value>> = if combos.is_empty() {
+        vec![None]
+    } else {
+        combos.into_iter().map(Some).collect()
     };
+    let mut last: Result<RunRecord, RunError> =
+        Err(RunError::run_failure("no_run", "no run executed"));
+    let mut first_failure: Option<Result<RunRecord, RunError>> = None;
+    for matrix in combinations {
+        let record =
+            run_flow_direct(&flow, &inputs, seed.as_ref(), matrix, &composed, config).await;
+        // Persist each combination's terminal snapshot. A store write failure is observability, not
+        // the run's result, so it is a warning, never a reason to fail the run.
+        if let (Some(store), Ok(record)) = (&run_store, &record)
+            && let Err(store_err) = store.save(record).await
+        {
+            eprintln!(
+                "tmx: warning: could not persist the run record: {}",
+                store_err.message
+            );
+        }
+        // A hard error (an unresolved reference, a breached limit) stops the matrix; a completed run
+        // with a non-`Ok` status is a valid record, so the remaining combinations still run — but it
+        // is latched as a failure so a later pass cannot mask it.
+        let hard_error = record.is_err();
+        let failed = match &record {
+            Ok(record) => record.status != RunStatus::Ok,
+            Err(_) => true,
+        };
+        if failed && first_failure.is_none() {
+            first_failure = Some(record.clone());
+        }
+        last = record;
+        if hard_error {
+            break;
+        }
+    }
+    // The first failing combination, if any, is the run's result (so a later pass never masks an
+    // earlier failure); otherwise every combination passed and the last record is the result.
+    let result = first_failure.unwrap_or(last);
 
-    // Clean best-effort even after a failed run (the context `destroy` hook has already fired inside
-    // the pipeline). Skipped by `--keep` (leave it up) and `--no-deploy` (we never provisioned it).
+    // Clean best-effort even after a failed run. Skipped by `--keep` (leave it up) and `--no-deploy`
+    // (we never provisioned it).
     if let (Some(loaded), Some(env)) = (&provider_loaded, &environment)
         && !args.no_deploy
         && !args.keep
@@ -170,25 +263,16 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
         eprintln!("tmx: warning: provider clean failed: {}", clean_err.message);
     }
 
-    // Persist the terminal snapshot (the masked final-state `RunRecord`) alongside the event log the
-    // streaming tee already wrote. A store write failure must not fail an otherwise-successful run
-    // (the record is observability, not the run's result), so it is a warning, not an error.
-    if let (Some(store), Ok(record)) = (&run_store, &record)
-        && let Err(store_err) = store.save(record).await
-    {
-        eprintln!(
-            "tmx: warning: could not persist the run record: {}",
-            store_err.message
-        );
-    }
-
-    // Render the stdout machine data for the selected format. `ndjson` already streamed every event to
-    // stdout during the run (via the composed reporter), and `pretty` writes nothing to stdout (the
-    // human reads the stderr progress); only `json` renders the final Pipeline state here, at run end.
-    if let Ok(record) = &record {
+    // `--state-out` dumps the (already masked) final state of the terminal run to a file, and the
+    // selected `--format` renders the stdout machine data (json → the final state object; ndjson /
+    // pretty already streamed during the run).
+    if let Ok(record) = &result {
+        if let Some(path) = &args.state_out {
+            write_state_out(record, path)?;
+        }
         emit_final_state(record, format)?;
     }
-    record
+    result
 }
 
 /// Spawn the background cancellation watchers on the current Tokio runtime (06 §Concurrency,
@@ -271,16 +355,22 @@ fn emit_final_state(record: &RunRecord, format: Format) -> Result<(), RunError> 
     FinalStateSink::new().emit(&masked)
 }
 
-/// Execute an already-preflighted, assembled [`ResolvedFlow`] directly through the runner, returning
-/// the masked terminal [`RunRecord`] — the directory / folder-layout path.
-async fn execute_preflighted(
-    preflighted: &Preflighted,
+/// Execute a prepared [`ResolvedFlow`] directly through the runner, returning the masked terminal
+/// [`RunRecord`]. `inputs` is the already-coerced `inputs.*` scope, `seed` the optional `--state-in`
+/// prior state, and `matrix` the `--matrix` combination bound as `${{ matrix.<key> }}` (`None` for a
+/// matrix-free run). This is the single execution path both a single-file and a directory target take
+/// once the flag surface has prepared the flow — it mirrors the `RunFlow` use case's own tail (mint id
+/// → run → mask final state → build the record).
+async fn run_flow_direct(
+    flow: &ResolvedFlow,
+    inputs: &Value,
+    seed: Option<&PipelineState>,
+    matrix: Option<Value>,
     composed: &Composed,
     config: RunConfig,
 ) -> Result<RunRecord, RunError> {
-    let flow: &ResolvedFlow = &preflighted.flow;
     let ports = composed.ports();
-    let merged = merged_inputs(&serde_json::json!({}), &flow.inputs);
+    let merged = merged_inputs(inputs, &flow.inputs);
 
     let id = composed.ids().new_run_id();
     let started_at = ports.clock.now();
@@ -288,8 +378,11 @@ async fn execute_preflighted(
     let mut masker = Masker::new();
     let mut resolved_secrets: Vec<String> = Vec::new();
 
-    let pipeline = composed
-        .runner(config)
+    let runner = match matrix {
+        Some(binding) => composed.runner(config).with_matrix(binding),
+        None => composed.runner(config),
+    };
+    let pipeline = runner
         .run(
             &id,
             flow,
@@ -297,6 +390,7 @@ async fn execute_preflighted(
             ports,
             &mut masker,
             &mut resolved_secrets,
+            seed,
             0,
         )
         .await?
@@ -324,6 +418,394 @@ async fn execute_preflighted(
         final_state: Some(final_state),
         results: pipeline.results,
     })
+}
+
+// ---------------------------------------------------------------------------------------------
+// The run-flag depth helpers (07 §`tmx run` run flags, §Matrix sugar): input coercion, `--env`
+// overrides, task slicing, `--state-in` seed, `--matrix` lowering, `--dry-run` plan, `--state-out`
+// dump, and the `--watch` re-run loop.
+// ---------------------------------------------------------------------------------------------
+
+/// Build the supplied `inputs.*` object from `--inputs-file` then the `--input` flags (a later flag
+/// overrides the file and an earlier flag), coercing every supplied value to its declared `type`.
+///
+/// `--input k=v` supplies a string `v`, coerced to the declared type of `k`; `--input k:=<json>`
+/// supplies a raw JSON value used as-is. `--inputs-file` reads a JSON object whose values are coerced
+/// the same way. A value that cannot be coerced to its declared type is a typed `input_type_mismatch`
+/// error (negative space) rather than a silently mistyped input.
+fn coerce_inputs(args: &RunArgs, flow: &ResolvedFlow) -> Result<Value, RunError> {
+    let mut supplied = serde_json::Map::new();
+
+    if let Some(path) = &args.inputs_file {
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            RunError::resolution(
+                "inputs_file_unreadable",
+                format!("could not read --inputs-file `{path}`: {e}"),
+            )
+        })?;
+        let value: Value = serde_json::from_str(&text).map_err(|e| {
+            RunError::validation(
+                "inputs_file_invalid",
+                format!("--inputs-file `{path}` is not valid JSON: {e}"),
+            )
+        })?;
+        let object = value.as_object().ok_or_else(|| {
+            RunError::validation(
+                "inputs_file_not_object",
+                format!("--inputs-file `{path}` must be a JSON object of input values"),
+            )
+        })?;
+        for (key, raw) in object {
+            supplied.insert(key.clone(), coerce_declared(key, raw.clone(), flow)?);
+        }
+    }
+
+    for entry in &args.input {
+        // `k:=<json>` supplies a raw JSON value; `k=v` supplies a coerced string. Test `:=` first so a
+        // JSON value containing `=` is not mis-split.
+        if let Some((key, json)) = entry.split_once(":=") {
+            let value: Value = serde_json::from_str(json.trim()).map_err(|e| {
+                RunError::validation(
+                    "input_json_invalid",
+                    format!("--input {key}:= value is not valid JSON: {e}"),
+                )
+            })?;
+            supplied.insert(key.to_string(), value);
+        } else if let Some((key, raw)) = entry.split_once('=') {
+            supplied.insert(
+                key.to_string(),
+                coerce_declared(key, Value::String(raw.to_string()), flow)?,
+            );
+        } else {
+            return Err(RunError::validation(
+                "input_malformed",
+                format!("--input {entry:?} must be `k=v` or `k:=<json>`"),
+            ));
+        }
+    }
+
+    Ok(Value::Object(supplied))
+}
+
+/// Coerce a supplied input `value` to the declared `type` of input `key`, when the flow declares one.
+/// An undeclared input, or one declared `string` (or with no `type`), passes through unchanged.
+fn coerce_declared(key: &str, value: Value, flow: &ResolvedFlow) -> Result<Value, RunError> {
+    let declared = flow
+        .inputs
+        .get(key)
+        .and_then(|spec| spec.input_type.as_deref());
+    let Some(declared) = declared else {
+        return Ok(value);
+    };
+    // A value already of the right JSON type is accepted as-is; only a string needs coercion.
+    let Value::String(text) = &value else {
+        return Ok(value);
+    };
+    let coerced = match declared {
+        "string" => Some(Value::String(text.clone())),
+        // Prefer an integer form (so `count=3` is `3`, not `3.0`), falling back to a float.
+        "number" => text.parse::<i64>().ok().map(Value::from).or_else(|| {
+            text.parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map(Value::Number)
+        }),
+        "boolean" => text.parse::<bool>().ok().map(Value::Bool),
+        "object" | "array" => serde_json::from_str::<Value>(text).ok(),
+        _ => Some(Value::String(text.clone())),
+    }
+    .ok_or_else(|| {
+        RunError::validation(
+            "input_type_mismatch",
+            format!("input {key:?} value {text:?} does not coerce to declared type {declared:?}"),
+        )
+    })?;
+    // A parsed object/array must match the declared shape (a `[...]` for `object` is rejected).
+    let shape_ok = match declared {
+        "object" => coerced.is_object(),
+        "array" => coerced.is_array(),
+        _ => true,
+    };
+    if !shape_ok {
+        return Err(RunError::validation(
+            "input_type_mismatch",
+            format!("input {key:?} value {text:?} is not a JSON {declared}"),
+        ));
+    }
+    Ok(coerced)
+}
+
+/// Apply `--env K=V` overrides onto the flow's context env, creating a context/env map when the flow
+/// declares none. A malformed `--env` entry (no `=`) is a typed `env_malformed` error.
+fn apply_env_overrides(
+    mut flow: ResolvedFlow,
+    overrides: &[String],
+) -> Result<ResolvedFlow, RunError> {
+    if overrides.is_empty() {
+        return Ok(flow);
+    }
+    let mut context = flow.context.take().unwrap_or_default();
+    let mut env = context.env.take().unwrap_or_default();
+    for entry in overrides {
+        let (key, value) = entry.split_once('=').ok_or_else(|| {
+            RunError::validation("env_malformed", format!("--env {entry:?} must be `K=V`"))
+        })?;
+        env.insert(key.to_string(), value.to_string());
+    }
+    context.env = Some(env);
+    flow.context = Some(context);
+    Ok(flow)
+}
+
+/// Validate a `--concurrency` request against the engine ceiling [`CONCURRENCY_MAX`]: a request above
+/// it is a typed `concurrency_too_high` error (the same bound `run_map`/`run_eval` enforce), so an
+/// over-limit cap is rejected at the boundary rather than silently clamped. `None` (unset) is Ok.
+fn check_concurrency(concurrency: Option<u32>) -> Result<(), RunError> {
+    if let Some(requested) = concurrency
+        && requested > CONCURRENCY_MAX
+    {
+        return Err(RunError::validation(
+            "concurrency_too_high",
+            format!(
+                "--concurrency {requested} exceeds the {CONCURRENCY_MAX} ceiling (CONCURRENCY_MAX)"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Build the [`TaskSlice`] from the slicing flags (`--from`/`--until`/`--only`/`--skip`).
+fn build_slice(args: &RunArgs) -> TaskSlice {
+    TaskSlice {
+        from: args.from.clone(),
+        until: args.until.clone(),
+        only: args.only.clone(),
+        skip: args.skip.clone(),
+    }
+}
+
+/// Read and re-validate the `--state-in` seed: the file must parse as JSON and be a valid Pipeline
+/// state (a top-level object). A malformed or non-object file is rejected as a typed error rather than
+/// silently trusting state TMX itself may have written (07 §`tmx run`: re-validate seeded state).
+fn read_state_in(path: Option<&str>) -> Result<Option<PipelineState>, RunError> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        RunError::resolution(
+            "state_in_unreadable",
+            format!("could not read --state-in `{path}`: {e}"),
+        )
+    })?;
+    let value: Value = serde_json::from_str(&text).map_err(|e| {
+        RunError::validation(
+            "state_in_invalid",
+            format!("--state-in `{path}` is not valid JSON: {e}"),
+        )
+    })?;
+    // Re-validation: a seeded state must be a JSON object (`PipelineState::new` enforces it).
+    let state = PipelineState::new(value)?;
+    Ok(Some(state))
+}
+
+/// Parse the `--matrix key=v1,v2` axes and lower them to the bounded cross-product (07 §Matrix sugar).
+/// An authored `map` wins: when the flow already declares a `map` task, `--matrix` is ignored with a
+/// stderr warning and no combinations are produced (a single, matrix-free run).
+fn resolve_matrix(args: &RunArgs, flow: &ResolvedFlow) -> Result<Vec<Value>, RunError> {
+    if args.matrix.is_empty() {
+        return Ok(Vec::new());
+    }
+    if flow_has_map(flow) {
+        eprintln!(
+            "tmx: warning: this Flow authors a `map` task; --matrix is ignored (the authored map wins)"
+        );
+        return Ok(Vec::new());
+    }
+    let mut axes: IndexMap<String, Vec<Value>> = IndexMap::new();
+    for entry in &args.matrix {
+        let (key, values) = entry.split_once('=').ok_or_else(|| {
+            RunError::validation(
+                "matrix_malformed",
+                format!("--matrix {entry:?} must be `key=v1,v2,…`"),
+            )
+        })?;
+        let parsed: Vec<Value> = values
+            .split(',')
+            .map(|v| {
+                let v = v.trim();
+                // A value that parses as JSON keeps its type (`1` → number, `true` → boolean);
+                // otherwise it is a bare string (`linux`).
+                serde_json::from_str::<Value>(v).unwrap_or_else(|_| Value::String(v.to_string()))
+            })
+            .collect();
+        axes.entry(key.to_string()).or_default().extend(parsed);
+    }
+    matrix_combinations(&axes)
+}
+
+/// Print the resolved run plan for `--dry-run` — the flow name, the resolved inputs, the ordered task
+/// list, and the matrix combinations — as one JSON object on stdout, and return an `ok` terminal
+/// [`RunRecord`] so the process exits `0` having executed nothing.
+fn dry_run_plan(
+    id: tmx_core::RunId,
+    flow: &ResolvedFlow,
+    inputs: &Value,
+    combos: &[Value],
+    format: Format,
+) -> Result<RunRecord, RunError> {
+    let tasks: Vec<Value> = flow
+        .tasks
+        .iter()
+        .map(|task| {
+            serde_json::json!({
+                "name": task.name.clone().unwrap_or_default(),
+                "type": task_type_name(&task.with),
+            })
+        })
+        .collect();
+    let plan = serde_json::json!({
+        "dryRun": true,
+        "flow": flow.name.clone(),
+        "inputs": inputs,
+        "tasks": tasks,
+        "matrix": combos,
+    });
+    // The plan is machine data → stdout under json/ndjson; under pretty it is a human artifact. Either
+    // way it is pretty-printed so a reviewer reads it directly.
+    let _ = format;
+    let rendered = serde_json::to_string_pretty(&plan).map_err(|e| {
+        RunError::run_failure(
+            "dry_run_unrenderable",
+            format!("could not render the plan: {e}"),
+        )
+    })?;
+    println!("{rendered}");
+
+    Ok(RunRecord {
+        id,
+        flow: flow.name.clone(),
+        status: tmx_core::RunStatus::Ok,
+        started_at: SystemClock::new().now(),
+        finished_at: Some(SystemClock::new().now()),
+        ms: Some(Milliseconds(0)),
+        final_state: Some(PipelineState::empty()),
+        results: Vec::new(),
+    })
+}
+
+/// Dump the terminal run's already-masked final state to `--state-out` as pretty JSON, so a later run
+/// can resume it via `--state-in`. A write failure is a typed error naming the path.
+fn write_state_out(record: &RunRecord, path: &str) -> Result<(), RunError> {
+    let state = record
+        .final_state
+        .as_ref()
+        .map_or_else(|| serde_json::json!({}), |s| s.as_value().clone());
+    let rendered = serde_json::to_string_pretty(&state).map_err(|e| {
+        RunError::run_failure(
+            "state_out_unrenderable",
+            format!("could not render the final state: {e}"),
+        )
+    })?;
+    std::fs::write(path, rendered).map_err(|e| {
+        RunError::run_failure(
+            "state_out_unwritable",
+            format!("could not write --state-out `{path}`: {e}"),
+        )
+    })
+}
+
+/// The `--watch` loop: run the Flow, then re-run it every time its resolved source file(s) change,
+/// each re-run a full run with its own record (07 §Decisions: `--watch` runs are ordinary runs). The
+/// watcher polls the source modification times; a SIGINT stops it and the process exits with the most
+/// recent run's code. Returns the most recent run's [`RunRecord`].
+async fn watch(args: &RunArgs) -> Result<RunRecord, RunError> {
+    let cwd = std::env::current_dir().map_err(|e| {
+        RunError::resolution(
+            "cwd_unavailable",
+            format!("could not read the current working directory: {e}"),
+        )
+    })?;
+    let resolved = resolve_target(args, &cwd, config::env_flow())?;
+    let watched = watched_paths(&resolved);
+    let mut fingerprint = source_fingerprint(&watched);
+
+    let mut last = run_once(args).await;
+    eprintln!("tmx: watching for changes… (Ctrl-C to stop)");
+    loop {
+        // Wait for either a source change (re-run) or a SIGINT (stop the watcher).
+        let changed = tokio::select! {
+            () = wait_for_change(&watched, &mut fingerprint) => true,
+            _ = tokio::signal::ctrl_c() => false,
+        };
+        if !changed {
+            eprintln!("tmx: watch stopped");
+            break;
+        }
+        eprintln!("tmx: change detected, re-running");
+        last = run_once(args).await;
+    }
+    last
+}
+
+/// The absolute source paths a `--watch` run polls for changes — the single file, or every enumerated
+/// entry of a directory target.
+fn watched_paths(resolved: &ResolvedTarget) -> Vec<String> {
+    match &resolved.target {
+        PreflightTarget::File(path) => vec![path.clone()],
+        PreflightTarget::Directory { entries } => entries.clone(),
+    }
+}
+
+/// A cheap change fingerprint of the watched paths: each path's last-modified time in nanoseconds
+/// since the epoch (0 when unavailable), in path order.
+fn source_fingerprint(paths: &[String]) -> Vec<u128> {
+    paths
+        .iter()
+        .map(|path| {
+            std::fs::metadata(path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos())
+        })
+        .collect()
+}
+
+/// Poll the watched paths until their fingerprint changes, updating `fingerprint` in place. Polls on a
+/// fixed interval so the watcher needs no filesystem-notification dependency (staying inside the
+/// adapter dependency budget).
+async fn wait_for_change(paths: &[String], fingerprint: &mut Vec<u128>) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(WATCH_POLL_INTERVAL_MS)).await;
+        let current = source_fingerprint(paths);
+        if &current != fingerprint {
+            *fingerprint = current;
+            return;
+        }
+    }
+}
+
+/// How often the `--watch` loop polls the source modification times, in milliseconds. A local UI
+/// cadence (not a bounded *engine* dimension), so it is a named constant here rather than in
+/// `tmx-schema::limits`.
+const WATCH_POLL_INTERVAL_MS: u64 = 500;
+
+/// The stable `type` token for a task's `with` payload — the dry-run plan's task-type label. Exhaustive
+/// match over the closed [`TaskWith`] vocabulary, no wildcard, so a new variant forces an update here.
+fn task_type_name(with: &tmx_schema::task::TaskWith) -> &'static str {
+    use tmx_schema::task::TaskWith;
+    match with {
+        TaskWith::Exec(_) => "exec",
+        TaskWith::Run(_) => "run",
+        TaskWith::Fetch(_) => "fetch",
+        TaskWith::File(_) => "file",
+        TaskWith::Store(_) => "store",
+        TaskWith::ChatCompletion(_) => "chat-completion",
+        TaskWith::Assert(_) => "assert",
+        TaskWith::Map(_) => "map",
+        TaskWith::Eval(_) => "eval",
+        TaskWith::Flow(_) => "flow",
+    }
 }
 
 /// Resolve the Flow reference by the documented order (07 §`tmx run`): `--file/-f` → positional →
@@ -503,7 +985,208 @@ fn unresolved(searched: &[String]) -> RunError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tmx_core::ErrorCategory;
+    use tmx_core::{ErrorCategory, resolve_flow};
+
+    /// A flow declaring three typed inputs, for the coercion tests.
+    fn typed_flow() -> ResolvedFlow {
+        resolve_flow(serde_json::json!({
+            "inputs": {
+                "count": { "type": "number" },
+                "flag": { "type": "boolean" },
+                "name": { "type": "string" },
+                "tags": { "type": "array" }
+            },
+            "tasks": []
+        }))
+        .expect("the fixture flow resolves")
+    }
+
+    #[test]
+    fn coerce_inputs_coerces_each_value_to_its_declared_type() {
+        // `--input k=v` coerces a string to the declared type; `k:=<json>` supplies a raw JSON value.
+        let args = RunArgs {
+            input: vec![
+                "count=3".to_string(),
+                "flag=true".to_string(),
+                "name=release".to_string(),
+                "tags:=[\"a\",\"b\"]".to_string(),
+            ],
+            ..RunArgs::default()
+        };
+        let inputs = coerce_inputs(&args, &typed_flow()).expect("the inputs coerce");
+        assert_eq!(
+            inputs["count"],
+            serde_json::json!(3),
+            "a number input coerces from its string"
+        );
+        assert_eq!(
+            inputs["flag"],
+            serde_json::json!(true),
+            "a boolean input coerces"
+        );
+        assert_eq!(
+            inputs["name"],
+            serde_json::json!("release"),
+            "a string input passes through"
+        );
+        assert_eq!(
+            inputs["tags"],
+            serde_json::json!(["a", "b"]),
+            "a k:=<json> value is used as a raw JSON array"
+        );
+    }
+
+    #[test]
+    fn coerce_inputs_rejects_a_value_that_does_not_match_its_declared_type() {
+        // Negative space: a non-numeric string for a `number` input is a typed `input_type_mismatch`.
+        let args = RunArgs {
+            input: vec!["count=lots".to_string()],
+            ..RunArgs::default()
+        };
+        let err = coerce_inputs(&args, &typed_flow()).expect_err("a mistyped input is rejected");
+        assert_eq!(err.code, "input_type_mismatch", "the coercion-failure code");
+        assert!(
+            err.message.contains("count"),
+            "the error names the offending input, got {:?}",
+            err.message
+        );
+
+        // Negative space: a malformed `--input` (no `=`) is a usage error, never a silent drop.
+        let malformed = RunArgs {
+            input: vec!["justakey".to_string()],
+            ..RunArgs::default()
+        };
+        let err =
+            coerce_inputs(&malformed, &typed_flow()).expect_err("a malformed input is rejected");
+        assert_eq!(
+            err.code, "input_malformed",
+            "a bad --input shape is rejected"
+        );
+    }
+
+    #[test]
+    fn apply_env_overrides_sets_context_env_creating_a_context_when_absent() {
+        // `--env K=V` overrides land in the context env even when the flow declared no context.
+        let flow = resolve_flow(serde_json::json!({ "tasks": [] })).expect("resolves");
+        let flow = apply_env_overrides(flow, &["TOKEN=abc".to_string(), "REGION=eu".to_string()])
+            .expect("the overrides apply");
+        let env = flow
+            .context
+            .as_ref()
+            .and_then(|c| c.env.as_ref())
+            .expect("a context env was created");
+        assert_eq!(
+            env.get("TOKEN").map(String::as_str),
+            Some("abc"),
+            "the override lands"
+        );
+        assert_eq!(
+            env.get("REGION").map(String::as_str),
+            Some("eu"),
+            "a second override lands"
+        );
+
+        // Negative space: a malformed `--env` (no `=`) is a typed error.
+        let flow = resolve_flow(serde_json::json!({ "tasks": [] })).expect("resolves");
+        let err =
+            apply_env_overrides(flow, &["NOEQUALS".to_string()]).expect_err("malformed --env");
+        assert_eq!(err.code, "env_malformed", "a bad --env shape is rejected");
+    }
+
+    #[test]
+    fn read_state_in_re_validates_and_rejects_a_bad_file() {
+        let dir = temp_dir("state-in");
+        // A valid object file seeds the state.
+        let good = dir.join("good.json");
+        std::fs::write(&good, "{\"build\":{\"sha\":\"abc\"}}").expect("write state");
+        let seed = read_state_in(good.to_str())
+            .expect("a valid state file reads")
+            .expect("a seed was produced");
+        assert_eq!(
+            seed.as_value().get("build"),
+            Some(&serde_json::json!({ "sha": "abc" })),
+            "the seeded state round-trips"
+        );
+
+        // Negative space: a non-object JSON state fails re-validation (`state_not_object`).
+        let non_object = dir.join("array.json");
+        std::fs::write(&non_object, "[1,2,3]").expect("write array");
+        let err = read_state_in(non_object.to_str()).expect_err("a non-object state is rejected");
+        assert_eq!(
+            err.category,
+            ErrorCategory::Validation,
+            "a bad seed is a validation error"
+        );
+
+        // Negative space: a malformed JSON file is rejected on read, not silently seeded.
+        let malformed = dir.join("bad.json");
+        std::fs::write(&malformed, "{not json").expect("write malformed");
+        let err = read_state_in(malformed.to_str()).expect_err("malformed JSON is rejected");
+        assert_eq!(
+            err.code, "state_in_invalid",
+            "a malformed state file is rejected"
+        );
+
+        // Absent `--state-in` seeds nothing.
+        assert!(
+            read_state_in(None).expect("no state is Ok").is_none(),
+            "no seed without --state-in"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_matrix_lowers_two_axes_and_an_authored_map_wins() {
+        // Two axes lower to the four-way cross-product, typed values preserved.
+        let flow = resolve_flow(serde_json::json!({ "tasks": [] })).expect("resolves");
+        let args = RunArgs {
+            matrix: vec!["a=1,2".to_string(), "b=x,y".to_string()],
+            ..RunArgs::default()
+        };
+        let combos = resolve_matrix(&args, &flow).expect("the matrix lowers");
+        assert_eq!(combos.len(), 4, "2×2 is a four-way cross-product");
+        assert_eq!(
+            combos[0],
+            serde_json::json!({ "a": 1, "b": "x" }),
+            "numbers stay numbers, strings strings"
+        );
+
+        // An authored `map` wins: `--matrix` is ignored (no combinations), a warning is emitted.
+        let mapped = resolve_flow(serde_json::json!({
+            "tasks": [ { "name": "fan", "type": "map", "with": {
+                "items": ["a"],
+                "task": { "type": "exec", "with": { "command": "noop" } }
+            } } ]
+        }))
+        .expect("resolves");
+        let combos = resolve_matrix(&args, &mapped).expect("an authored map is not an error");
+        assert!(
+            combos.is_empty(),
+            "an authored map suppresses --matrix (the authored map wins)"
+        );
+    }
+
+    #[test]
+    fn check_concurrency_accepts_within_ceiling_and_rejects_above_it() {
+        // A request at or below the ceiling is accepted; unset is accepted; above it is a typed error.
+        assert!(
+            check_concurrency(None).is_ok(),
+            "an unset --concurrency is fine"
+        );
+        assert!(
+            check_concurrency(Some(CONCURRENCY_MAX)).is_ok(),
+            "a request at the ceiling is accepted"
+        );
+        let err = check_concurrency(Some(CONCURRENCY_MAX + 1))
+            .expect_err("a request above the ceiling is rejected");
+        assert_eq!(err.code, "concurrency_too_high", "the over-ceiling code");
+        assert_eq!(
+            err.category,
+            ErrorCategory::Validation,
+            "an over-limit concurrency is a validation error"
+        );
+    }
 
     /// A unique temp directory for one test, created under the system temp root.
     fn temp_dir(tag: &str) -> PathBuf {

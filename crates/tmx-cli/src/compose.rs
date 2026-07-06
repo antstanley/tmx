@@ -42,7 +42,6 @@ use tmx_adapters::validate::JsonSchemaValidator;
 
 use tmx_core::error::RunError;
 use tmx_core::ports::driven::EventSink;
-use tmx_core::usecases::EngineRunFlow;
 use tmx_core::{
     AvailableCapabilities, CancelToken, Capability, PipelineRunner, Ports, PreflightPorts,
     RunConfig,
@@ -238,15 +237,10 @@ impl Composed {
         &self.scheduler
     }
 
-    /// Build the `RunFlow` use case (the reference-driven load → resolve → run → mask pipeline) over
-    /// this adapter bundle and engine `config`.
-    #[must_use]
-    pub fn run_flow(&self, config: RunConfig) -> EngineRunFlow<'_> {
-        EngineRunFlow::new(self.ports(), &self.ids, config)
-    }
-
-    /// A bare [`PipelineRunner`] over `config` — used to execute an already-preflighted, assembled
-    /// Flow (a directory / folder layout has no single file reference to drive the `RunFlow` use case).
+    /// A bare [`PipelineRunner`] over `config` — the single execution seam the `tmx run` command drives
+    /// the resolved, flag-prepared Flow through (inputs coerced, env overridden, tasks sliced, a matrix
+    /// combination bound). The reference-driven [`EngineRunFlow`] use case remains available to library
+    /// and HTTP hosts; the CLI prepares the flow itself so the full run-flag surface applies uniformly.
     #[must_use]
     pub fn runner(&self, config: RunConfig) -> PipelineRunner {
         PipelineRunner::new(config)

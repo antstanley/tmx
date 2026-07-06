@@ -56,5 +56,8 @@ pub use preflight::{
     preflight,
 };
 pub use resolve::{merged_inputs, resolve_flow};
-pub use runner::{PipelineRunner, Ports, ProducesCheck, RunConfig, RunOutcome};
+pub use runner::{
+    PipelineRunner, Ports, ProducesCheck, RunConfig, RunOutcome, TaskSlice, flow_has_map,
+    matrix_combinations, slice_tasks,
+};
 pub use usecases::{EngineLintFlow, EngineRunFlow};

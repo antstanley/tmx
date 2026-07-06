@@ -21,6 +21,11 @@ pub struct Cli {
 }
 
 /// The top-level commands. Task 17 implements `run`; task 25 adds `env` (provider lifecycle).
+// `Run` carries the full `tmx run` flag surface, so it is far larger than the other variants — but a
+// parsed `Cli` is a single short-lived value the process constructs once at startup, never stored in
+// bulk, so the size asymmetry costs nothing. Boxing it would fight `clap`'s derive for a subcommand's
+// `Args` field; the allow is the idiomatic choice for a one-shot arg tree.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Run a Flow end to end: load, preflight, execute, and print the masked final state to stdout.
@@ -127,6 +132,73 @@ pub struct RunArgs {
     /// Overrides the `CANCEL_GRACE_MS` default (5s); `--grace 0` forces an immediate hard stop.
     #[arg(long)]
     pub grace: Option<String>,
+
+    /// Supply a declared input, coerced to its declared `type`: `--input k=v` (a string, coerced) or
+    /// `--input k:=<json>` (a raw JSON value). Repeatable; a later value wins on a repeated key.
+    #[arg(long = "input", short = 'i', value_name = "K=V")]
+    pub input: Vec<String>,
+
+    /// Read declared inputs from a JSON object file; each key is an input, coerced to its declared
+    /// `type`. Individual `--input` flags override a value the file supplies.
+    #[arg(long = "inputs-file", value_name = "FILE")]
+    pub inputs_file: Option<String>,
+
+    /// Override a context `env` var for this run: `--env K=V`. Repeatable.
+    #[arg(long = "env", value_name = "K=V")]
+    pub env: Vec<String>,
+
+    /// Seed the Pipeline state from a JSON object file (`--state-in`), re-validated on read; a later
+    /// task then reads a prior task's state via `${{ tasks.NAME.field }}`.
+    #[arg(long = "state-in", value_name = "FILE")]
+    pub state_in: Option<String>,
+
+    /// Dump the masked final Pipeline state to a JSON file at run end (`--state-out`).
+    #[arg(long = "state-out", value_name = "FILE")]
+    pub state_out: Option<String>,
+
+    /// Run only these tasks (by name); repeatable. Slicing pairs with `--state-in`.
+    #[arg(long = "only", value_name = "TASK")]
+    pub only: Vec<String>,
+
+    /// Skip these tasks (by name); repeatable.
+    #[arg(long = "skip", value_name = "TASK")]
+    pub skip: Vec<String>,
+
+    /// Start the run at this task, dropping every earlier one (inclusive).
+    #[arg(long = "from", value_name = "TASK")]
+    pub from: Option<String>,
+
+    /// End the run at this task, dropping every later one (inclusive).
+    #[arg(long = "until", value_name = "TASK")]
+    pub until: Option<String>,
+
+    /// Resolve, validate, and print the plan; execute nothing (`--dry-run` / `-n`).
+    #[arg(long = "dry-run", short = 'n')]
+    pub dry_run: bool,
+
+    /// Desugar to a bounded `map` cross-product: `--matrix key=v1,v2`. Repeatable axes form the
+    /// cross-product, each combination binding `${{ matrix.<key> }}`. An authored `map` wins (a
+    /// stderr warning; `--matrix` is ignored).
+    #[arg(long = "matrix", value_name = "K=V1,V2")]
+    pub matrix: Vec<String>,
+
+    /// Global concurrency cap for `map`/`eval` fan-out (`--concurrency N`), clamped to `CONCURRENCY_MAX`.
+    #[arg(long)]
+    pub concurrency: Option<u32>,
+
+    /// Force `continueOnError` across every task: a task failure is recorded and the run continues.
+    #[arg(long = "continue-on-error")]
+    pub continue_on_error: bool,
+
+    /// Narrow the state-size cap for this run (`--max-state-size <bytes>`), clamped to the hard
+    /// `STATE_SIZE_MAX_BYTES` ceiling. A plain byte count.
+    #[arg(long = "max-state-size", value_name = "BYTES")]
+    pub max_state_size: Option<u64>,
+
+    /// Re-run the Flow whenever its source file changes (`--watch`); each re-run is a full run with its
+    /// own record. SIGINT stops the watcher; the process exits with the most recent run's code.
+    #[arg(long)]
+    pub watch: bool,
 }
 
 /// Arguments for `tmx runs` — a query against the local run store (07 §Pipeline runs; 08 §Run store).
@@ -482,6 +554,97 @@ mod tests {
         assert!(
             Cli::try_parse_from(["tmx", "run", "flow.yaml", "--check-produces=loose"]).is_err(),
             "an unknown --check-produces value is rejected"
+        );
+    }
+
+    #[test]
+    fn run_parses_the_full_flag_depth_surface() {
+        // The depth flags (inputs, env, state, slicing, dry-run, matrix, concurrency, …) all parse.
+        let args = run_args(
+            Cli::try_parse_from([
+                "tmx",
+                "run",
+                "flow.yaml",
+                "--input",
+                "count=3",
+                "-i",
+                "flag:=true",
+                "--inputs-file",
+                "inputs.json",
+                "--env",
+                "TOKEN=abc",
+                "--state-in",
+                "prior.json",
+                "--state-out",
+                "final.json",
+                "--from",
+                "build",
+                "--until",
+                "test",
+                "--only",
+                "build",
+                "--skip",
+                "lint",
+                "--dry-run",
+                "--matrix",
+                "os=linux,mac",
+                "--matrix",
+                "arch=x64,arm",
+                "--concurrency",
+                "4",
+                "--continue-on-error",
+                "--max-state-size",
+                "1048576",
+                "--watch",
+            ])
+            .expect("the full depth surface parses"),
+        );
+        assert_eq!(
+            args.input,
+            vec!["count=3".to_string(), "flag:=true".to_string()],
+            "--input is repeatable and -i is its short"
+        );
+        assert_eq!(
+            args.inputs_file.as_deref(),
+            Some("inputs.json"),
+            "--inputs-file"
+        );
+        assert_eq!(args.env, vec!["TOKEN=abc".to_string()], "--env captured");
+        assert_eq!(args.state_in.as_deref(), Some("prior.json"), "--state-in");
+        assert_eq!(args.state_out.as_deref(), Some("final.json"), "--state-out");
+        assert_eq!(args.from.as_deref(), Some("build"), "--from");
+        assert_eq!(args.until.as_deref(), Some("test"), "--until");
+        assert_eq!(args.only, vec!["build".to_string()], "--only");
+        assert_eq!(args.skip, vec!["lint".to_string()], "--skip");
+        assert!(args.dry_run, "--dry-run set");
+        assert_eq!(
+            args.matrix,
+            vec!["os=linux,mac".to_string(), "arch=x64,arm".to_string()],
+            "--matrix is a repeatable axis list"
+        );
+        assert_eq!(args.concurrency, Some(4), "--concurrency captured");
+        assert!(args.continue_on_error, "--continue-on-error set");
+        assert_eq!(
+            args.max_state_size,
+            Some(1_048_576),
+            "--max-state-size captured"
+        );
+        assert!(args.watch, "--watch set");
+
+        // Defaults: a bare run leaves every depth flag empty/off.
+        let bare = run_args(Cli::try_parse_from(["tmx", "run", "flow.yaml"]).expect("bare run"));
+        assert!(
+            bare.input.is_empty() && bare.matrix.is_empty() && !bare.dry_run && !bare.watch,
+            "the depth flags default off"
+        );
+
+        // Negative space: `-n` is the `--dry-run` short, and a non-numeric --concurrency is rejected.
+        let short =
+            run_args(Cli::try_parse_from(["tmx", "run", "flow.yaml", "-n"]).expect("-n parses"));
+        assert!(short.dry_run, "-n is the --dry-run short");
+        assert!(
+            Cli::try_parse_from(["tmx", "run", "flow.yaml", "--concurrency", "lots"]).is_err(),
+            "a non-numeric --concurrency is a usage error"
         );
     }
 

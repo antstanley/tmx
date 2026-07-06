@@ -19,7 +19,7 @@ pub type EnvMap = IndexMap<String, String>;
 ///
 /// `additionalProperties: false` in the schema — every field is named, so the mirror rejects an
 /// unknown key rather than silently dropping it.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Context {
     /// Optional artifact discriminator; the constant `"context"` for a standalone `context.*` file.

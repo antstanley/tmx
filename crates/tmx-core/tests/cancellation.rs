@@ -205,6 +205,7 @@ fn a_hard_cancelled_in_flight_task_ends_timed_out_fires_destroy_and_stops_dispat
             bundle.ports(),
             &mut masker,
             &mut secrets,
+            None,
             0,
         ),
         // While the hanging task is parked, escalate straight to a hard timeout cancellation (the
@@ -273,6 +274,7 @@ fn a_soft_cancel_requested_before_a_task_stops_dispatch_cleanly() {
         bundle.ports(),
         &mut masker,
         &mut secrets,
+        None,
         0,
     ))
     .expect("a cancelled run returns a terminal outcome");
@@ -335,6 +337,7 @@ fn a_never_triggered_token_runs_the_flow_to_completion_unaffected() {
         bundle.ports(),
         &mut masker,
         &mut secrets,
+        None,
         0,
     ))
     .expect("the run completes");

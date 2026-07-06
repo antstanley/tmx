@@ -74,17 +74,26 @@ pub struct HookRunner<'a> {
     config: RunConfig,
     /// Whether the surrounding run is itself a hook body — if so, no lifecycle hook fires.
     in_hook: bool,
+    /// The run's `--matrix` combination, so a hook body reads the same `${{ matrix.<key> }}` as the
+    /// tasks that triggered it. An empty object for a matrix-free run.
+    matrix: Value,
 }
 
 impl<'a> HookRunner<'a> {
-    /// Wire a hook runner over a Flow's `context`, the engine `config`, and whether the surrounding
-    /// run is already a hook body (`in_hook`).
+    /// Wire a hook runner over a Flow's `context`, the engine `config`, whether the surrounding run is
+    /// already a hook body (`in_hook`), and the run's `matrix` binding (propagated to hook bodies).
     #[must_use]
-    pub fn new(context: Option<&'a Context>, config: RunConfig, in_hook: bool) -> Self {
+    pub fn new(
+        context: Option<&'a Context>,
+        config: RunConfig,
+        in_hook: bool,
+        matrix: Value,
+    ) -> Self {
         Self {
             context,
             config,
             in_hook,
+            matrix,
         }
     }
 
@@ -154,7 +163,8 @@ impl<'a> HookRunner<'a> {
 
         // Run the body one level deep: a `for_hook_body` runner walks its tasks without firing hooks,
         // and `run_tasks` is given `None`, so no `change` fires per hook task either.
-        let body_runner = PipelineRunner::for_hook_body(self.config);
+        let body_runner =
+            PipelineRunner::for_hook_body(self.config).with_matrix(self.matrix.clone());
         let outcome = body_runner
             .run_tasks(
                 id,
@@ -163,6 +173,7 @@ impl<'a> HookRunner<'a> {
                 ports,
                 masker,
                 resolved_secrets,
+                None,
                 depth,
                 None,
             )

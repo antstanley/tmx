@@ -331,15 +331,20 @@ impl LocalRunStore {
 /// The inner reporter runs first and its result is propagated (the stdout data contract is
 /// load-bearing); the store append runs second and its failure is **swallowed to stderr** — an
 /// observability-overflow or a disk hiccup must not abort the run (08 §Cancellation: "observability
-/// overflow should not abort work"). The run id is learned from the first `run.start` event (always the
-/// first event a run emits) and held for the whole run, so every subsequent event — including a nested
-/// sub-flow's — is filed under the top-level run.
+/// overflow should not abort work"). The run id is learned from each `run.start` event (always the
+/// first event a run emits) and held until the next `run.start`, so every subsequent event — including a
+/// nested sub-flow's — is filed under the top-level run. A single sink is reused across a `--matrix`
+/// cross-product where each combination is a full run emitting its own `run.start`; **re-latching** on
+/// every `run.start` files each combination's events under its own id (only the top-level
+/// `PipelineRunner::run` emits `run.start` — nested flow tasks and hook bodies go through `run_tasks`,
+/// which emits none — so a re-latch always marks a genuine new top-level run).
 pub struct StoringSink {
     /// The reporter the stream is teed to first (unchanged behaviour).
     inner: Box<dyn EventSink>,
     /// The store each masked event is persisted to.
     store: std::sync::Arc<LocalRunStore>,
-    /// The top-level run id, learned once from the first `run.start`.
+    /// The current top-level run id, re-latched on every `run.start` so a reused sink files each
+    /// `--matrix` combination's events under that combination's own run id.
     run_id: Mutex<Option<RunId>>,
 }
 
@@ -354,15 +359,16 @@ impl StoringSink {
         }
     }
 
-    /// The run id to file an event under: the one learned from `run.start`, latching it on first sight.
+    /// The run id to file an event under: the one carried by the most recent `run.start`. Each
+    /// `run.start` **re-latches** the id, so a sink reused across a `--matrix` cross-product files each
+    /// combination's events under that combination's own run id (a fresh combination always opens with
+    /// its own top-level `run.start`), rather than leaving the first-seen id latched for the whole matrix.
     fn run_id_for(&self, event: &Event) -> Option<RunId> {
         let mut guard = self
             .run_id
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if guard.is_none()
-            && let Event::RunStart { id, .. } = event
-        {
+        if let Event::RunStart { id, .. } = event {
             *guard = Some(id.clone());
         }
         guard.clone()
@@ -808,6 +814,62 @@ mod tests {
         assert_eq!(
             events[1]["event"], "run.finish",
             "run.finish persisted second"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_reused_sink_files_each_matrix_run_under_its_own_id() {
+        // Regression: a single StoringSink is reused across a `--matrix` cross-product, where every
+        // combination is a full run emitting its own run.start. The sink must re-latch on each
+        // run.start so each combination's events land in that combination's own directory — not all
+        // under the first combination's id (07 §Matrix sugar: each combination is a full run with its
+        // own record and store entry).
+        let dir = temp_dir("matrix-sink");
+        let store = Arc::new(LocalRunStore::new(&dir));
+        let sink = StoringSink::new(Box::new(CountingSink::default()), Arc::clone(&store));
+        let masker = Masker::new();
+
+        // Two combinations run through the one sink, each a full run.start → run.finish pair.
+        let first = id_for("018f8c7e");
+        let second = id_for("018f9000");
+        for id in [&first, &second] {
+            block_on_ready(sink.emit(&masker.redact_event(&Event::RunStart {
+                id: id.clone(),
+                flow: "matrixed".to_string(),
+            })))
+            .expect("emit run.start");
+            block_on_ready(sink.emit(&masker.redact_event(&Event::RunFinish {
+                id: id.clone(),
+                status: RunStatus::Ok,
+                ms: Milliseconds(3),
+            })))
+            .expect("emit run.finish");
+        }
+
+        // Each combination has its own log with its own run.start id — the second run is not orphaned.
+        let first_events = store.read_log_values(&first).expect("read first log");
+        assert_eq!(
+            first_events.len(),
+            2,
+            "the first combination's log holds only its own two events"
+        );
+        assert_eq!(
+            first_events[0]["id"],
+            first.as_str(),
+            "the first log's run.start carries the first combination's id"
+        );
+        let second_events = store.read_log_values(&second).expect("read second log");
+        assert_eq!(
+            second_events.len(),
+            2,
+            "the second combination's log holds its own two events, not zero"
+        );
+        assert_eq!(
+            second_events[0]["id"],
+            second.as_str(),
+            "the second log's run.start carries the second combination's id, re-latched"
         );
 
         std::fs::remove_dir_all(&dir).ok();
