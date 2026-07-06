@@ -272,7 +272,7 @@ fn run_assert(aw: &AssertWith, scope: &Scope<'_>, name: &str) -> Result<(), RunE
 /// `toBeCloseTo(number, precision)`) take an array `expected` as their argument list; every other
 /// matcher treats `expected` as a single argument (so a `toEqual([1,2])` compares against the whole
 /// array, not two arguments).
-fn split_args(matcher: MatcherName, expected: Option<&Value>) -> Option<Vec<Value>> {
+pub(crate) fn split_args(matcher: MatcherName, expected: Option<&Value>) -> Option<Vec<Value>> {
     let expected = expected?;
     match matcher {
         MatcherName::ToHaveProperty | MatcherName::ToBeCloseTo => match expected {
@@ -288,7 +288,7 @@ fn split_args(matcher: MatcherName, expected: Option<&Value>) -> Option<Vec<Valu
 // ---------------------------------------------------------------------------------------------
 
 /// Build a [`ProcessSpec`] for an `exec` task.
-fn build_exec_spec(
+pub(crate) fn build_exec_spec(
     ew: &ExecWith,
     name: &str,
     scope: &Scope<'_>,
@@ -312,7 +312,7 @@ fn build_exec_spec(
 }
 
 /// Build a [`ProcessSpec`] for a `run` task (a script in a named interpreter, default `bash`).
-fn build_run_spec(
+pub(crate) fn build_run_spec(
     rw: &RunWith,
     name: &str,
     scope: &Scope<'_>,

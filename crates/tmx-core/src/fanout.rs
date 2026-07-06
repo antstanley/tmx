@@ -20,14 +20,19 @@
 
 use std::future::Future;
 
+use indexmap::IndexMap;
 use serde_json::Value;
-use tmx_schema::limits::{CONCURRENCY_MAX, FANOUT_WIDTH_MAX, FLOW_DEPTH_MAX};
-use tmx_schema::task::{MapWith, TaskWith};
+use tmx_schema::ChatMessage;
+use tmx_schema::limits::{
+    CONCURRENCY_MAX, EVAL_PASS_SCORE_DEFAULT_RATIO, FANOUT_WIDTH_MAX, FLOW_DEPTH_MAX,
+};
+use tmx_schema::task::{EvalWith, ExecWith, MapWith, RunWith, Scorer, TaskWith};
 
-use crate::dispatch::interp_value;
+use crate::dispatch::{build_exec_spec, build_run_spec, interp_value, split_args};
 use crate::error::RunError;
-use crate::model::Scope;
-use crate::ports::driven::Scheduler;
+use crate::matcher::MatcherEngine;
+use crate::model::{EvalCase, EvalSummary, Scope, Scorecard};
+use crate::ports::driven::{ChatModel, ChatRequest, ProcessRunner, Scheduler};
 
 /// Run a `map` task's bounded fan-out and return the collected output **array** (item order).
 ///
@@ -193,6 +198,603 @@ fn bind_item(element: &Value, index: u32) -> Value {
             Value::Object(bound)
         }
         other => other.clone(),
+    }
+}
+
+// =============================================================================================
+// `eval` — measurement over a dataset with scorers, a Scorecard summary, and threshold gating (05
+// §`eval`, §Scorers). Like `map`, it is pure orchestration over the injected [`Scheduler`]: it owns
+// no I/O and spawns no work, delegating the subject run to the `run_subject` callback and the
+// side-effecting scorers to the injected [`ChatModel`] / [`ProcessRunner`] ports. The pure `matcher`
+// scorer runs inline through the shared [`MatcherEngine`], never a parallel vocabulary.
+// =============================================================================================
+
+/// Run an `eval` task's measurement and return the [`Scorecard`] as a JSON [`Value`] for the merge.
+///
+/// `eval` is the parsed payload, `name` the task name (for typed-error attribution), `scope` the
+/// parent run scope `dataset`/scorer operands resolve against, `scheduler` the concurrency port,
+/// `chat`/`process` the ports the `llmRubric`/`exec` scorers cross, `concurrency_cap` the run's
+/// global concurrency ceiling, `depth` the current `flow`-recursion depth, and `run_subject` the
+/// callback that runs the `subject` once for one case (index, the `${{ case }}` binding, and the
+/// depth the subject runs at — incremented when the subject is a `flow`).
+///
+/// Each case runs the `subject` once (when present), binds `${{ output }}` and `${{ case }}`, then
+/// applies each scorer; the per-case score is the weighted mean of its scorers' scores (every score
+/// asserted in `[0, 1]`). The `summary` aggregates `mean`, `weightedMean`, `passRate`, `min`, `p50`,
+/// `p90`, and `count` over the per-case scores. A `threshold` (`metric >= min`) gates the run: a miss
+/// is a `RunFailure` (`eval_threshold_missed`); without one the overall `passed` is `true`.
+///
+/// # Errors
+///
+/// - `fanout_too_wide` — the resolved `dataset` is longer than [`FANOUT_WIDTH_MAX`].
+/// - `concurrency_too_high` — the requested `concurrency` exceeds [`CONCURRENCY_MAX`].
+/// - `eval_dataset_not_array` — `dataset` resolves to a value that is not an array.
+/// - `flow_depth_exceeded` — a `flow` subject would recurse past [`FLOW_DEPTH_MAX`].
+/// - `scorer_bad_output` — an `exec`/`run` scorer emits output that is not a number in `[0, 1]`.
+/// - `rubric_bad_output` — an `llmRubric` judge returns a non-conforming (non-`[0,1]`) response.
+/// - `eval_threshold_missed` — the gated metric fell below the `threshold.min`.
+/// - a scorer-configuration error (`unknown_scorer_type`, `scorer_missing_matcher`, …), or the
+///   subject's own error.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_eval<S, F, Fut>(
+    eval: &EvalWith,
+    name: &str,
+    scope: &Scope<'_>,
+    scheduler: &S,
+    chat: &dyn ChatModel,
+    process: &dyn ProcessRunner,
+    concurrency_cap: u32,
+    depth: u32,
+    run_subject: F,
+) -> Result<Value, RunError>
+where
+    S: Scheduler,
+    F: Fn(u32, Value, u32) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<Value, RunError>> + Send,
+{
+    // At least one scorer is required (the schema enforces it; assert the invariant defensively so a
+    // caller that bypassed the loader cannot produce a meaningless empty-scorer weighted mean).
+    if eval.scorers.is_empty() {
+        return Err(RunError::validation(
+            "eval_no_scorers",
+            format!("eval task {name:?} declares no scorers"),
+        )
+        .with_task(name));
+    }
+    assert!(
+        !eval.scorers.is_empty(),
+        "an eval must carry at least one scorer"
+    );
+
+    // 1. Resolve the dataset: an explicit array of cases (each binds as `${{ case }}`), or a single
+    //    synthetic case when `dataset` is absent (run once, no `${{ case }}` binding).
+    let cases: Option<Vec<Value>> = match &eval.dataset {
+        Some(dataset) => {
+            let resolved = interp_value(dataset, scope)?;
+            let array = resolved.as_array().ok_or_else(|| {
+                RunError::run_failure(
+                    "eval_dataset_not_array",
+                    format!("eval task {name:?} `dataset` did not resolve to an array"),
+                )
+                .with_task(name)
+            })?;
+            Some(array.clone())
+        }
+        None => None,
+    };
+    let n = cases.as_ref().map_or(1usize, Vec::len);
+
+    // Bound the fan-out width, exactly as `map` does: bounded iteration must be literally bounded.
+    if n as u64 > u64::from(FANOUT_WIDTH_MAX) {
+        return Err(RunError::run_failure(
+            "fanout_too_wide",
+            format!(
+                "eval task {name:?} resolved {n} cases, exceeding the {FANOUT_WIDTH_MAX} fan-out width limit"
+            ),
+        )
+        .with_task(name));
+    }
+    assert!(
+        n as u64 <= u64::from(FANOUT_WIDTH_MAX),
+        "fan-out width must be within FANOUT_WIDTH_MAX"
+    );
+
+    // 2. Resolve the concurrency budget (same clamp as `map`): default 1, capped by the engine
+    //    ceiling and the run's global cap, never below one in-flight unit.
+    let requested = eval.concurrency.unwrap_or(1);
+    if requested > CONCURRENCY_MAX {
+        return Err(RunError::validation(
+            "concurrency_too_high",
+            format!(
+                "eval task {name:?} requests concurrency {requested}, exceeding the {CONCURRENCY_MAX} ceiling"
+            ),
+        )
+        .with_task(name));
+    }
+    let cap = concurrency_cap.clamp(1, CONCURRENCY_MAX);
+    let effective = requested.max(1).min(cap);
+    assert!(
+        effective >= 1,
+        "effective concurrency must be at least one unit"
+    );
+    assert!(
+        effective <= CONCURRENCY_MAX,
+        "effective concurrency must not exceed CONCURRENCY_MAX units"
+    );
+
+    // 3. A `flow` subject consumes a recursion level; guard before any case runs (as `map` does).
+    let subject_present = eval.subject.is_some();
+    let inner_depth = match &eval.subject {
+        Some(task) if matches!(task.with, TaskWith::Flow(_)) => {
+            if depth >= FLOW_DEPTH_MAX {
+                return Err(RunError::resolution(
+                    "flow_depth_exceeded",
+                    format!(
+                        "eval task {name:?} flow subject at depth {depth} would recurse past the {FLOW_DEPTH_MAX}-level bound"
+                    ),
+                )
+                .with_task(name));
+            }
+            depth + 1
+        }
+        _ => depth,
+    };
+
+    // The per-case `passed` flag colours cases against `passScore` (default 0.5, overridden by a
+    // threshold's `passScore`); `threshold.metric` — separately — gates the run (05 §Decisions).
+    let pass_score = eval
+        .threshold
+        .as_ref()
+        .and_then(|t| t.pass_score)
+        .unwrap_or(EVAL_PASS_SCORE_DEFAULT_RATIO);
+
+    // 4. Run each case through the Scheduler, collecting scored cases in INDEX order. Any case error
+    //    (a subject failure, a bad scorer output) aborts the whole eval — there is no per-case
+    //    continue policy: a scorecard with a silently-dropped case would misreport the metrics.
+    let scorers = &eval.scorers;
+    let cases_ref = cases.as_ref();
+    let run_subject = &run_subject;
+    let results = scheduler
+        .run_indexed(n as u32, effective, |index| {
+            let case_value = cases_ref.map(|c| c[index as usize].clone());
+            score_case(
+                index,
+                case_value,
+                scorers,
+                scope,
+                chat,
+                process,
+                pass_score,
+                subject_present,
+                inner_depth,
+                run_subject,
+                name,
+            )
+        })
+        .await;
+    assert_eq!(
+        results.len(),
+        n,
+        "the scheduler returns exactly one result per case, in index order"
+    );
+
+    let mut scored: Vec<EvalCase> = Vec::with_capacity(n);
+    for result in results {
+        scored.push(result?);
+    }
+    assert_eq!(
+        scored.len(),
+        n,
+        "the scorecard holds exactly one case per dataset entry"
+    );
+
+    // 5. Aggregate the summary and apply the threshold gate.
+    let summary = aggregate_summary(&scored, pass_score);
+    let passed = match &eval.threshold {
+        None => true,
+        Some(threshold) => {
+            let metric = threshold.metric.as_deref().unwrap_or("weightedMean");
+            let value = metric_value(&summary, metric).ok_or_else(|| {
+                RunError::validation(
+                    "unknown_eval_metric",
+                    format!("eval task {name:?} threshold references unknown metric {metric:?}"),
+                )
+                .with_task(name)
+            })?;
+            if value < threshold.min {
+                return Err(RunError::run_failure(
+                    "eval_threshold_missed",
+                    format!(
+                        "eval task {name:?} metric {metric} = {value} is below the required minimum {}",
+                        threshold.min
+                    ),
+                )
+                .with_task(name));
+            }
+            true
+        }
+    };
+
+    let scorecard = Scorecard {
+        cases: scored,
+        summary,
+        passed,
+    };
+    // Paired assertion: the scorecard reports one case per dataset entry and a defined pass verdict.
+    assert_eq!(
+        scorecard.cases.len(),
+        n,
+        "the emitted scorecard carries one case per dataset entry"
+    );
+    assert_eq!(
+        scorecard.summary.count as usize, n,
+        "the summary count equals the number of scored cases"
+    );
+
+    serde_json::to_value(&scorecard).map_err(|e| {
+        RunError::run_failure(
+            "eval_scorecard_unserializable",
+            format!("eval task {name:?} scorecard did not serialise: {e}"),
+        )
+        .with_task(name)
+    })
+}
+
+/// Score one dataset case: run the `subject` (when present), then apply every scorer and fold their
+/// scores into the case's weighted-mean score. Returns the [`EvalCase`] for the scorecard.
+#[allow(clippy::too_many_arguments)]
+async fn score_case<F, Fut>(
+    index: u32,
+    case_value: Option<Value>,
+    scorers: &[Scorer],
+    parent_scope: &Scope<'_>,
+    chat: &dyn ChatModel,
+    process: &dyn ProcessRunner,
+    pass_score: f64,
+    subject_present: bool,
+    inner_depth: u32,
+    run_subject: &F,
+    name: &str,
+) -> Result<EvalCase, RunError>
+where
+    F: Fn(u32, Value, u32) -> Fut,
+    Fut: Future<Output = Result<Value, RunError>> + Send,
+{
+    // Run the subject once for this case (when present); its output binds as `${{ output }}`.
+    let output_value: Option<Value> = if subject_present {
+        let case_arg = case_value.clone().unwrap_or(Value::Null);
+        Some(run_subject(index, case_arg, inner_depth).await?)
+    } else {
+        None
+    };
+
+    // The case scope: the parent bindings plus this case's `${{ case }}` and `${{ output }}`.
+    let case_scope = Scope {
+        case: case_value.as_ref(),
+        output: output_value.as_ref(),
+        ..*parent_scope
+    };
+
+    let mut scores: IndexMap<String, f64> = IndexMap::with_capacity(scorers.len());
+    let mut weighted_sum = 0.0f64;
+    let mut weight_sum = 0.0f64;
+    for scorer in scorers {
+        let weight = scorer.weight.unwrap_or(1.0);
+        if !(weight.is_finite() && weight > 0.0) {
+            return Err(RunError::validation(
+                "scorer_bad_weight",
+                format!(
+                    "scorer {:?} in eval task {name:?} has non-positive weight {weight}",
+                    scorer.name
+                ),
+            )
+            .with_task(name));
+        }
+        let score = score_one(
+            scorer,
+            &case_scope,
+            output_value.as_ref(),
+            chat,
+            process,
+            name,
+        )
+        .await?;
+        // The `[0, 1]` invariant is checked before the score is folded into the weighted mean — the
+        // scorer paths already reject out-of-range values, so this is the paired backstop.
+        assert!(
+            (0.0..=1.0).contains(&score) && score.is_finite(),
+            "every scorer score must be within [0, 1]"
+        );
+        scores.insert(scorer.name.clone(), score);
+        weighted_sum += score * weight;
+        weight_sum += weight;
+    }
+    // Every scorer contributes a positive weight, so the divisor is positive (no divide-by-zero).
+    assert!(
+        weight_sum > 0.0,
+        "the summed scorer weight must be positive"
+    );
+    let case_score = weighted_sum / weight_sum;
+    assert!(
+        (0.0..=1.0).contains(&case_score) && case_score.is_finite(),
+        "the per-case weighted-mean score must be within [0, 1]"
+    );
+
+    Ok(EvalCase {
+        case: case_value,
+        output: output_value,
+        scores,
+        score: case_score,
+        passed: case_score >= pass_score,
+    })
+}
+
+/// Evaluate a single scorer against the case scope, returning its score in `[0, 1]`.
+///
+/// The `matcher` scorer is pure ([`MatcherEngine`], `1.0`/`0.0`); `llmRubric` crosses the
+/// [`ChatModel`] port; `exec`/`run` crosses the [`ProcessRunner`] port. A judge or command that does
+/// not yield a number in `[0, 1]` is a typed failure, never a silent zero.
+async fn score_one(
+    scorer: &Scorer,
+    case_scope: &Scope<'_>,
+    output_value: Option<&Value>,
+    chat: &dyn ChatModel,
+    process: &dyn ProcessRunner,
+    name: &str,
+) -> Result<f64, RunError> {
+    let kind = scorer.scorer_type.as_deref().unwrap_or("matcher");
+    match kind {
+        "matcher" => {
+            let actual = resolve_actual(scorer, case_scope, output_value, name)?;
+            let matcher = scorer.matcher.ok_or_else(|| {
+                RunError::validation(
+                    "scorer_missing_matcher",
+                    format!(
+                        "matcher scorer {:?} in eval task {name:?} has no matcher",
+                        scorer.name
+                    ),
+                )
+                .with_task(name)
+            })?;
+            let expected = scorer
+                .expected
+                .as_ref()
+                .map(|e| interp_value(e, case_scope))
+                .transpose()?;
+            let args = split_args(matcher, expected.as_ref());
+            let not = scorer.not.unwrap_or(false);
+            let held = MatcherEngine::evaluate(&actual, matcher, args.as_deref(), not);
+            Ok(if held { 1.0 } else { 0.0 })
+        }
+        "llmRubric" => {
+            let actual = resolve_actual(scorer, case_scope, output_value, name)?;
+            let model = scorer.model.clone().ok_or_else(|| {
+                RunError::validation(
+                    "rubric_missing_model",
+                    format!(
+                        "llmRubric scorer {:?} in eval task {name:?} has no model",
+                        scorer.name
+                    ),
+                )
+                .with_task(name)
+            })?;
+            let rubric = match &scorer.rubric {
+                Some(r) => value_to_text(&interp_value(&Value::String(r.clone()), case_scope)?),
+                None => String::new(),
+            };
+            let request = ChatRequest {
+                model,
+                messages: vec![
+                    ChatMessage {
+                        role: "system".to_string(),
+                        content: Value::String(format!(
+                            "You are grading an output against a rubric. {rubric}\nReply with only a single number between 0 and 1."
+                        )),
+                        name: None,
+                    },
+                    ChatMessage {
+                        role: "user".to_string(),
+                        content: Value::String(value_to_text(&actual)),
+                        name: None,
+                    },
+                ],
+                temperature: None,
+                max_tokens: None,
+            };
+            let response = chat.complete(request).await?;
+            unit_score(parse_score(&response.content)).ok_or_else(|| {
+                RunError::run_failure(
+                    "rubric_bad_output",
+                    format!(
+                        "llmRubric scorer {:?} in eval task {name:?} judge returned {:?}, not a number in [0, 1]",
+                        scorer.name, response.content
+                    ),
+                )
+                .with_task(name)
+            })
+        }
+        "exec" | "run" => {
+            let with = scorer.with.as_ref().ok_or_else(|| {
+                RunError::validation(
+                    "scorer_missing_with",
+                    format!(
+                        "{kind} scorer {:?} in eval task {name:?} has no `with`",
+                        scorer.name
+                    ),
+                )
+                .with_task(name)
+            })?;
+            let empty_env = IndexMap::new();
+            let spec = if kind == "run" {
+                let rw: RunWith = serde_json::from_value(with.clone()).map_err(|e| {
+                    RunError::validation(
+                        "scorer_bad_with",
+                        format!("run scorer {:?} `with` is invalid: {e}", scorer.name),
+                    )
+                    .with_task(name)
+                })?;
+                build_run_spec(&rw, name, case_scope, &empty_env)?
+            } else {
+                let ew: ExecWith = serde_json::from_value(with.clone()).map_err(|e| {
+                    RunError::validation(
+                        "scorer_bad_with",
+                        format!("exec scorer {:?} `with` is invalid: {e}", scorer.name),
+                    )
+                    .with_task(name)
+                })?;
+                build_exec_spec(&ew, name, case_scope, &empty_env)?
+            };
+            let out = process.run(spec).await?;
+            let bad = || {
+                RunError::run_failure(
+                    "scorer_bad_output",
+                    format!(
+                        "{kind} scorer {:?} in eval task {name:?} did not emit a number in [0, 1]",
+                        scorer.name
+                    ),
+                )
+                .with_task(name)
+            };
+            if out.exit_code != Some(0) {
+                return Err(bad());
+            }
+            let text = String::from_utf8_lossy(&out.stdout);
+            unit_score(parse_score(&text)).ok_or_else(bad)
+        }
+        other => Err(RunError::validation(
+            "unknown_scorer_type",
+            format!(
+                "scorer {:?} in eval task {name:?} has unknown type {other:?}",
+                scorer.name
+            ),
+        )
+        .with_task(name)),
+    }
+}
+
+/// Resolve a scorer's `actual` value: its explicit (interpolated) `actual`, or the subject's
+/// `${{ output }}` by default. An eval with no subject and a scorer with no `actual` is a typed error
+/// (the value to score is undetermined) rather than a silent `null`.
+fn resolve_actual(
+    scorer: &Scorer,
+    case_scope: &Scope<'_>,
+    output_value: Option<&Value>,
+    name: &str,
+) -> Result<Value, RunError> {
+    match &scorer.actual {
+        Some(actual) => interp_value(actual, case_scope),
+        None => output_value.cloned().ok_or_else(|| {
+            RunError::resolution(
+                "scorer_missing_actual",
+                format!(
+                    "scorer {:?} in eval task {name:?} has no `actual` and the eval has no subject output to score",
+                    scorer.name
+                ),
+            )
+            .with_task(name)
+        }),
+    }
+}
+
+/// Aggregate the per-case scores into the [`EvalSummary`] — every metric an `evalThreshold` can gate.
+///
+/// `mean` and `weightedMean` are both the arithmetic mean of the per-case scores: scorer weights are
+/// already folded into each case score, and v0 cases carry no case-level weight, so the two coincide.
+/// Both are emitted because `evalThreshold.metric` may gate on either (`weightedMean` is the default).
+/// `p50`/`p90` use the **nearest-rank** percentile method over the ascending-sorted scores.
+fn aggregate_summary(cases: &[EvalCase], pass_score: f64) -> EvalSummary {
+    let count = cases.len();
+    if count == 0 {
+        return EvalSummary {
+            mean: 0.0,
+            weighted_mean: 0.0,
+            pass_rate: 0.0,
+            min: None,
+            p50: None,
+            p90: None,
+            count: 0,
+        };
+    }
+    let scores: Vec<f64> = cases.iter().map(|c| c.score).collect();
+    let sum: f64 = scores.iter().sum();
+    let mean = sum / count as f64;
+    let passed = cases.iter().filter(|c| c.score >= pass_score).count();
+    let pass_rate = passed as f64 / count as f64;
+    let mut sorted = scores.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let min = sorted.first().copied();
+    EvalSummary {
+        mean,
+        weighted_mean: mean,
+        pass_rate,
+        min,
+        p50: percentile_nearest_rank(&sorted, 0.5),
+        p90: percentile_nearest_rank(&sorted, 0.9),
+        count: count as u32,
+    }
+}
+
+/// The nearest-rank percentile of an ascending-sorted slice: `rank = ceil(fraction × n)`, clamped to
+/// `[1, n]`, returning `sorted[rank - 1]`. `None` for an empty slice (no cases scored).
+fn percentile_nearest_rank(sorted_ascending: &[f64], fraction: f64) -> Option<f64> {
+    let n = sorted_ascending.len();
+    if n == 0 {
+        return None;
+    }
+    debug_assert!(
+        (0.0..=1.0).contains(&fraction),
+        "a percentile fraction must be within [0, 1]"
+    );
+    let rank = (fraction * n as f64).ceil() as usize;
+    let rank = rank.clamp(1, n);
+    sorted_ascending.get(rank - 1).copied()
+}
+
+/// Look up an `evalThreshold` metric by its schema name, `None` for an unknown name. `min`/`p50`/`p90`
+/// are `0.0` when absent (an empty dataset), so a gate on them fails rather than panics.
+fn metric_value(summary: &EvalSummary, metric: &str) -> Option<f64> {
+    match metric {
+        "mean" => Some(summary.mean),
+        "weightedMean" => Some(summary.weighted_mean),
+        "passRate" => Some(summary.pass_rate),
+        "min" => Some(summary.min.unwrap_or(0.0)),
+        "p50" => Some(summary.p50.unwrap_or(0.0)),
+        "p90" => Some(summary.p90.unwrap_or(0.0)),
+        _ => None,
+    }
+}
+
+/// Parse a scorer's raw text output into a number: a bare number (`0.9`), or a `{ "score": 0.9 }`
+/// object. Returns the raw value (range-checked separately by [`unit_score`]); `None` when the text
+/// is not a number or a `score` object.
+fn parse_score(text: &str) -> Option<f64> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        match value {
+            Value::Number(n) => return n.as_f64(),
+            Value::Object(map) => {
+                return map.get("score").and_then(Value::as_f64);
+            }
+            _ => {}
+        }
+    }
+    trimmed.parse::<f64>().ok()
+}
+
+/// Keep a parsed score only when it is a finite number within `[0, 1]`; `None` otherwise.
+fn unit_score(raw: Option<f64>) -> Option<f64> {
+    raw.filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+}
+
+/// Render a JSON value to text for a rubric prompt / an `actual` a judge reads: a string yields its
+/// contents, any other value its compact JSON form.
+fn value_to_text(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -597,6 +1199,167 @@ mod tests {
             out,
             json!([2, 2]),
             "a leaf inner task keeps the map's depth"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // `eval` pure-aggregation unit tests. The port-crossing `run_eval` paths (matcher/llmRubric/
+    // exec scorers, threshold gating over the real fakes) are exercised in the integration test
+    // `tests/eval.rs`, which can inject `tmx-testkit`'s fakes as the `tmx-core` port traits (an
+    // in-crate `#[cfg(test)]` module sees the dev-dependency's `tmx-core` as a distinct instance).
+    // -----------------------------------------------------------------------------------------
+
+    /// Build a scored [`EvalCase`] carrying just `score` — the aggregation helpers read only `score`.
+    fn case_scored(score: f64, pass_score: f64) -> EvalCase {
+        EvalCase {
+            case: None,
+            output: None,
+            scores: IndexMap::new(),
+            score,
+            passed: score >= pass_score,
+        }
+    }
+
+    #[test]
+    fn aggregate_summary_carries_every_gateable_metric() {
+        // Four scores → mean, weightedMean (== mean in v0), passRate, min, p50, p90, count. The
+        // nearest-rank percentiles: p50 of 4 → rank ceil(2.0)=2 → sorted[1]; p90 → rank ceil(3.6)=4.
+        let cases = [
+            case_scored(0.2, 0.5),
+            case_scored(0.8, 0.5),
+            case_scored(0.4, 0.5),
+            case_scored(1.0, 0.5),
+        ];
+        let summary = aggregate_summary(&cases, 0.5);
+        assert_eq!(summary.count, 4, "one entry per scored case");
+        assert!(
+            (summary.mean - 0.6).abs() < 1e-9,
+            "mean is the arithmetic mean of the case scores"
+        );
+        assert_eq!(
+            summary.weighted_mean, summary.mean,
+            "weightedMean coincides with mean when cases carry no case-level weight"
+        );
+        assert!(
+            (summary.pass_rate - 0.5).abs() < 1e-9,
+            "two of four cases are at or above passScore 0.5"
+        );
+        assert_eq!(summary.min, Some(0.2), "min is the smallest case score");
+        assert_eq!(
+            summary.p50,
+            Some(0.4),
+            "nearest-rank p50 of [0.2,0.4,0.8,1.0] is sorted[1] = 0.4"
+        );
+        assert_eq!(
+            summary.p90,
+            Some(1.0),
+            "nearest-rank p90 of four scores is sorted[3] = 1.0"
+        );
+    }
+
+    #[test]
+    fn aggregate_summary_of_no_cases_reports_empty_metrics() {
+        // Negative space: an empty dataset yields zeroed scalar metrics and absent percentiles,
+        // rather than a divide-by-zero NaN.
+        let summary = aggregate_summary(&[], 0.5);
+        assert_eq!(summary.count, 0, "no cases were scored");
+        assert_eq!(summary.mean, 0.0, "the empty mean is defined as zero");
+        assert_eq!(summary.min, None, "no min without a case");
+        assert_eq!(summary.p50, None, "no p50 without a case");
+        assert_eq!(summary.p90, None, "no p90 without a case");
+    }
+
+    #[test]
+    fn a_single_case_reduces_every_metric_to_its_score() {
+        // Residue: a single-case (single-scorer) eval reduces every aggregate to that one score.
+        let summary = aggregate_summary(&[case_scored(0.7, 0.5)], 0.5);
+        assert_eq!(summary.mean, 0.7, "mean of one score is that score");
+        assert_eq!(summary.min, Some(0.7), "min of one score is that score");
+        assert_eq!(summary.p50, Some(0.7), "p50 of one score is that score");
+        assert_eq!(summary.p90, Some(0.7), "p90 of one score is that score");
+    }
+
+    #[test]
+    fn percentile_nearest_rank_is_defined_and_bounded() {
+        let sorted = [0.1, 0.3, 0.5, 0.7, 0.9];
+        assert_eq!(
+            percentile_nearest_rank(&sorted, 0.5),
+            Some(0.5),
+            "p50 of five scores is rank ceil(2.5)=3 → sorted[2]"
+        );
+        assert_eq!(
+            percentile_nearest_rank(&sorted, 0.9),
+            Some(0.9),
+            "p90 of five scores is rank ceil(4.5)=5 → sorted[4]"
+        );
+        assert_eq!(
+            percentile_nearest_rank(&[], 0.5),
+            None,
+            "an empty slice has no percentile"
+        );
+    }
+
+    #[test]
+    fn parse_and_range_check_accept_numbers_and_reject_non_numbers() {
+        // A bare number, a `{ "score": x }` object, and whitespace all parse; range-checking then
+        // keeps only `[0,1]`.
+        assert_eq!(unit_score(parse_score("0.9")), Some(0.9), "a bare number");
+        assert_eq!(
+            unit_score(parse_score("  {\"score\": 0.25}  ")),
+            Some(0.25),
+            "a score object, trimmed"
+        );
+        assert_eq!(unit_score(parse_score("0")), Some(0.0), "the lower bound");
+        assert_eq!(unit_score(parse_score("1")), Some(1.0), "the upper bound");
+
+        // Negative space: non-numeric text, an out-of-range number, and an empty string are rejected
+        // (so a scorer returns a typed error, never a silent zero).
+        assert_eq!(
+            unit_score(parse_score("great job")),
+            None,
+            "prose is not a score"
+        );
+        assert_eq!(unit_score(parse_score("1.5")), None, "above the unit range");
+        assert_eq!(
+            unit_score(parse_score("-0.1")),
+            None,
+            "below the unit range"
+        );
+        assert_eq!(
+            unit_score(parse_score("")),
+            None,
+            "empty output is not a score"
+        );
+        assert_eq!(
+            unit_score(parse_score("{\"other\": 1}")),
+            None,
+            "an object without a `score` key is not a score"
+        );
+    }
+
+    #[test]
+    fn metric_value_maps_every_gateable_name_and_rejects_unknown() {
+        let summary = EvalSummary {
+            mean: 0.6,
+            weighted_mean: 0.6,
+            pass_rate: 0.5,
+            min: Some(0.2),
+            p50: Some(0.4),
+            p90: Some(1.0),
+            count: 4,
+        };
+        assert_eq!(
+            metric_value(&summary, "weightedMean"),
+            Some(0.6),
+            "default metric"
+        );
+        assert_eq!(metric_value(&summary, "min"), Some(0.2), "min is gateable");
+        assert_eq!(metric_value(&summary, "p90"), Some(1.0), "p90 is gateable");
+        // Negative space: an out-of-vocabulary metric has no value (a typed error at the gate).
+        assert_eq!(
+            metric_value(&summary, "median"),
+            None,
+            "an unknown metric name is rejected"
         );
     }
 }

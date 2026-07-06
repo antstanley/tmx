@@ -173,6 +173,19 @@ const _: () = assert!(
     "the mask-scan floor must exclude empty values"
 );
 
+/// Default per-case pass threshold for an `eval` — the score at or above which a case counts as
+/// passing when a `threshold.passScore` is not set, as a ratio in `[0, 1]`.
+///
+/// Colours each case's `passed` flag and defines `passRate` (05 §`eval`; 05 §Decisions:
+/// "`passScore` colours cases; `threshold.metric` gates"). A `threshold.passScore`, when present,
+/// overrides it. Units-last (`_RATIO`) and range-checked at compile time. Tunability: **per-flow**
+/// via `threshold.passScore`; this is only the fallback default, structurally fixed.
+pub const EVAL_PASS_SCORE_DEFAULT_RATIO: f64 = 0.5;
+const _: () = assert!(
+    EVAL_PASS_SCORE_DEFAULT_RATIO >= 0.0 && EVAL_PASS_SCORE_DEFAULT_RATIO <= 1.0,
+    "the default pass score must be a ratio within [0, 1]"
+);
+
 // Cross-limit sanity relations — a mistuning that breaks one of these is nonsensical and must fail
 // the build, not ship. Each states an invariant *between* limits, the negative space the per-limit
 // `>= 1` checks above cannot express.
