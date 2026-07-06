@@ -8,3 +8,6 @@ __pycache__/
 # Rust build artifacts
 /target
 **/target/
+
+# Local run store — the RunStore persists each run here (record, not a journal)
+**/.tmx/runs/

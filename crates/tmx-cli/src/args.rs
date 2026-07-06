@@ -27,6 +27,8 @@ pub enum Command {
     Run(RunArgs),
     /// Drive a Flow's environment provider through its lifecycle methods (07 §`tmx env`).
     Env(EnvArgs),
+    /// Query the local run store: list, show, dump state/logs, prune, or remove runs (07 §Pipeline runs).
+    Runs(RunsArgs),
 }
 
 /// Arguments for `tmx run` — the core surface plus the ephemeral-environment lifecycle flags
@@ -66,6 +68,47 @@ pub struct RunArgs {
     /// Disable ANSI colour on the stderr progress (as `NO_COLOR` does).
     #[arg(long = "no-color")]
     pub no_color: bool,
+
+    /// Do not record this run in the local run store (`./.tmx/runs/`): no snapshot, no event log.
+    #[arg(long = "no-store")]
+    pub no_store: bool,
+}
+
+/// Arguments for `tmx runs` — a query against the local run store (07 §Pipeline runs; 08 §Run store).
+#[derive(Debug, Parser)]
+pub struct RunsArgs {
+    /// The run-store query to perform.
+    #[command(subcommand)]
+    pub command: RunsCommand,
+}
+
+/// The `tmx runs` sub-actions, one per [`RunQuery`](tmx_core::ports::driving::RunQuery) variant.
+#[derive(Debug, Subcommand)]
+pub enum RunsCommand {
+    /// List stored runs, chronological by id.
+    List,
+    /// Show one run's full record (the masked final-state snapshot plus its metadata).
+    Show {
+        /// The run id (a UUIDv7).
+        id: String,
+    },
+    /// Dump one run's masked final state.
+    State {
+        /// The run id (a UUIDv7).
+        id: String,
+    },
+    /// Replay one run's masked event log.
+    Logs {
+        /// The run id (a UUIDv7).
+        id: String,
+    },
+    /// Prune runs older than the retention window.
+    Prune,
+    /// Remove one run by id.
+    Rm {
+        /// The run id (a UUIDv7).
+        id: String,
+    },
 }
 
 /// The `--format` value on the CLI surface — the clap mirror of
@@ -248,6 +291,60 @@ mod tests {
         assert!(
             Cli::try_parse_from(["tmx", "run", "flow.yaml", "--format", "yaml"]).is_err(),
             "an unknown --format value is rejected"
+        );
+    }
+
+    #[test]
+    fn run_parses_the_no_store_flag() {
+        // `--no-store` opts the run out of recording; it defaults off.
+        let default =
+            run_args(Cli::try_parse_from(["tmx", "run", "flow.yaml"]).expect("bare run parses"));
+        assert!(!default.no_store, "recording is on by default");
+        let opted_out = run_args(
+            Cli::try_parse_from(["tmx", "run", "flow.yaml", "--no-store"])
+                .expect("--no-store parses"),
+        );
+        assert!(opted_out.no_store, "--no-store is captured");
+    }
+
+    #[test]
+    fn runs_parses_each_subcommand() {
+        // Each `tmx runs` sub-action parses to its `RunsCommand` variant.
+        let list = Cli::try_parse_from(["tmx", "runs", "list"]).expect("runs list parses");
+        assert!(
+            matches!(
+                list.command,
+                Command::Runs(RunsArgs {
+                    command: RunsCommand::List
+                })
+            ),
+            "list maps to RunsCommand::List"
+        );
+        let show = Cli::try_parse_from(["tmx", "runs", "show", "abc"]).expect("runs show parses");
+        match show.command {
+            Command::Runs(RunsArgs {
+                command: RunsCommand::Show { id },
+            }) => assert_eq!(id, "abc", "show captures the id"),
+            other => panic!("expected runs show, got {other:?}"),
+        }
+        let prune = Cli::try_parse_from(["tmx", "runs", "prune"]).expect("runs prune parses");
+        assert!(
+            matches!(
+                prune.command,
+                Command::Runs(RunsArgs {
+                    command: RunsCommand::Prune
+                })
+            ),
+            "prune maps to RunsCommand::Prune"
+        );
+        // Negative space: `show` requires an id, and an unknown sub-action is rejected.
+        assert!(
+            Cli::try_parse_from(["tmx", "runs", "show"]).is_err(),
+            "show without an id is a usage error"
+        );
+        assert!(
+            Cli::try_parse_from(["tmx", "runs", "teleport"]).is_err(),
+            "an unknown runs sub-action is rejected"
         );
     }
 

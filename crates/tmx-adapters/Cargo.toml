@@ -21,6 +21,9 @@ tmx-schema = { path = "../tmx-schema" }
 # `serde_json::Value`; JSON and JSONC ride `serde_json` directly. `async-trait` is the same
 # trait-support macro the ports carry — it restores object safety for the async `SourceLoader` /
 # `ReferenceResolver` methods so they can be injected as `dyn Port`.
+# `serde`'s derive backs the `LocalRunStore` read-back shadow types (task 27): the model's emit-only
+# records carry no `Deserialize`, so the run store owns reconstructing a `RunRecord` from disk.
+serde = { workspace = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 # The ordered map the port request/response types (`HttpRequest`/`HttpResponse` headers, `query`) use;
 # the HTTP adapter builds response headers into one, so it names the same type the port declares.

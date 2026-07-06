@@ -24,6 +24,9 @@ tmx-schema = { path = "../tmx-schema" }
 # needs a runtime. This is the driving-adapter crate outside the purity boundary, so these deps are
 # expected here.
 clap = { version = "4", features = ["derive"] }
+# `async-trait` restores object safety for the `QueryRuns` driving-port impl behind `tmx runs` — the
+# same trait-support macro the ports and adapters carry.
+async-trait = "0.1"
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 

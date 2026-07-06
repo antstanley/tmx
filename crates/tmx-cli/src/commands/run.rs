@@ -10,9 +10,14 @@
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use tmx_adapters::clock::SystemClock;
 use tmx_adapters::loader::detect_source_kind;
+use tmx_adapters::runstore::LocalRunStore;
 use tmx_adapters::sink::{FinalStateSink, Format};
+
+use tmx_core::ports::driven::RunStore;
 
 use tmx_core::ports::driven::{IdGenerator, ProviderMethod};
 use tmx_core::ports::driving::{RunFlow, RunOptions};
@@ -64,7 +69,18 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
     );
     let color = config::resolve_color(args.color, args.no_color, std::io::stderr().is_terminal());
 
-    let composed = Composed::new(resolved.base_dir.clone(), format, color)?;
+    // Wire the run store unless `--no-store` opts out. It is rooted at `./.tmx/runs` under the cwd (the
+    // record is a project-local artifact), and retention is swept opportunistically here, before the
+    // run, so an aged record is pruned without waiting for `tmx runs prune`.
+    let run_store: Option<Arc<LocalRunStore>> = if args.no_store {
+        None
+    } else {
+        let store = Arc::new(LocalRunStore::new(cwd.join(".tmx").join("runs")));
+        sweep_retention(&store).await;
+        Some(store)
+    };
+
+    let composed = Composed::new(resolved.base_dir.clone(), format, color, run_store.clone())?;
     let preflighted = preflight(
         &resolved.target,
         composed.preflight_ports(),
@@ -134,6 +150,18 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
         eprintln!("tmx: warning: provider clean failed: {}", clean_err.message);
     }
 
+    // Persist the terminal snapshot (the masked final-state `RunRecord`) alongside the event log the
+    // streaming tee already wrote. A store write failure must not fail an otherwise-successful run
+    // (the record is observability, not the run's result), so it is a warning, not an error.
+    if let (Some(store), Ok(record)) = (&run_store, &record)
+        && let Err(store_err) = store.save(record).await
+    {
+        eprintln!(
+            "tmx: warning: could not persist the run record: {}",
+            store_err.message
+        );
+    }
+
     // Render the stdout machine data for the selected format. `ndjson` already streamed every event to
     // stdout during the run (via the composed reporter), and `pretty` writes nothing to stdout (the
     // human reads the stderr progress); only `json` renders the final Pipeline state here, at run end.
@@ -141,6 +169,26 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
         emit_final_state(record, format)?;
     }
     record
+}
+
+/// Sweep the run store's retention window opportunistically at the start of a run: prune every record
+/// older than the resolved window ([`config::resolve_retention_days`]), unless retention is disabled
+/// (`runs.retention` / `TMX_RUNS_RETENTION` set to `0` / `off`). Best-effort — a prune failure is a
+/// warning, never a reason to fail the run about to start.
+async fn sweep_retention(store: &LocalRunStore) {
+    let Some(days) = config::resolve_retention_days() else {
+        // Retention disabled (`0` / `off`): the sweep is fully skipped.
+        return;
+    };
+    let cutoff = SystemClock::new().cutoff_days_ago(days);
+    match store.prune(&cutoff).await {
+        Ok(0) => {}
+        Ok(pruned) => eprintln!("tmx: pruned {pruned} run record(s) past the retention window"),
+        Err(prune_err) => eprintln!(
+            "tmx: warning: run-store retention sweep failed: {}",
+            prune_err.message
+        ),
+    }
 }
 
 /// Render the machine-data stdout for the resolved `format` at run end: under `json`, the merged final

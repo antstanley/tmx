@@ -1434,6 +1434,7 @@ dependencies = [
  "jsonschema",
  "reqwest",
  "ring",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
  "tmx-core",
@@ -1447,6 +1448,7 @@ dependencies = [
 name = "tmx-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "serde_json",
  "tmx-adapters",

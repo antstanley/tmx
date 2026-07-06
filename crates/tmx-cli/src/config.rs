@@ -8,6 +8,7 @@
 //! lets later tasks widen the search order and the config layers in one place.
 
 use tmx_adapters::sink::Format;
+use tmx_schema::limits::RUN_RETENTION_DEFAULT_DAYS;
 
 /// The reserved Flow-file stems the cwd search probes, in precedence order: `flow.*` before `tmx.*`
 /// (07 §`tmx run`).
@@ -80,6 +81,36 @@ fn resolve_color_with(
     stderr_is_tty
 }
 
+/// Resolve the run-store retention window, in whole days: `Some(n)` retains runs for `n` days;
+/// `None` disables the retention sweep entirely (08 §Run store). Precedence: `TMX_RUNS_RETENTION`
+/// (`0` / `off`, case-insensitively, disables; a positive integer sets the window; anything else
+/// falls through), else the [`RUN_RETENTION_DEFAULT_DAYS`] default. The `runs.retention` config key
+/// joins this precedence when the config-file layer lands.
+#[must_use]
+pub fn resolve_retention_days() -> Option<u64> {
+    match std::env::var("TMX_RUNS_RETENTION") {
+        Ok(raw) => resolve_retention_with(&raw),
+        Err(_) => Some(RUN_RETENTION_DEFAULT_DAYS),
+    }
+}
+
+/// The env-free core of [`resolve_retention_days`]: `0` / `off` disables (`None`), a positive integer
+/// sets the window, and an unparseable token falls back to the default rather than aborting the run
+/// (a stray env var must not fail a run, mirroring the `TMX_FORMAT` handling). Split out so the
+/// precedence is tested without touching process env.
+#[must_use]
+fn resolve_retention_with(raw: &str) -> Option<u64> {
+    let token = raw.trim();
+    if token.eq_ignore_ascii_case("off") || token == "0" {
+        return None;
+    }
+    match token.parse::<u64>() {
+        Ok(days) if days > 0 => Some(days),
+        // An unparseable / zero-after-parse token falls back to the default window.
+        _ => Some(RUN_RETENTION_DEFAULT_DAYS),
+    }
+}
+
 /// The conventional Flow-file names the cwd search probes, in resolution order: every extension of
 /// `flow.*`, then every extension of `tmx.*` (07 §`tmx run`).
 #[must_use]
@@ -148,6 +179,34 @@ mod tests {
         assert!(
             !resolve_color_with(false, false, false, false),
             "a piped stderr defaults colour off"
+        );
+    }
+
+    #[test]
+    fn retention_off_and_zero_disable_otherwise_a_window_or_the_default() {
+        // `off` / `0` disable the sweep; a positive integer sets the window; garbage falls back to
+        // the default (a stray env var never aborts a run).
+        assert_eq!(resolve_retention_with("off"), None, "`off` disables");
+        assert_eq!(
+            resolve_retention_with("OFF"),
+            None,
+            "`off` is case-insensitive"
+        );
+        assert_eq!(resolve_retention_with("0"), None, "`0` disables");
+        assert_eq!(
+            resolve_retention_with("7"),
+            Some(7),
+            "a positive integer sets the window"
+        );
+        assert_eq!(
+            resolve_retention_with("garbage"),
+            Some(RUN_RETENTION_DEFAULT_DAYS),
+            "an unparseable token falls back to the default"
+        );
+        assert_eq!(
+            resolve_retention_with("  14  "),
+            Some(14),
+            "surrounding whitespace is trimmed"
         );
     }
 

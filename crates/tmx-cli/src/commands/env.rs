@@ -53,6 +53,8 @@ pub async fn execute(args: crate::args::EnvArgs) -> Result<Value, RunError> {
         resolved.base_dir.clone(),
         tmx_adapters::sink::Format::Json,
         false,
+        // `tmx env` drives the provider lifecycle, not the pipeline, so there is no run to record.
+        None,
     )?;
     let preflighted = preflight(
         &resolved.target,

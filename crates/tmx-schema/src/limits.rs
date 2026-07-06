@@ -164,6 +164,18 @@ const _: () = assert!(
     "the event log must admit at least one byte"
 );
 
+/// Default number of days a persisted run is retained before the `RunStore` prunes it.
+///
+/// Bounds how long a `RunRecord` lives under `./.tmx/runs/` before retention removes it. The sweep is
+/// opportunistic at the start of each `tmx run` and on demand via `tmx runs prune` (08 §Run store:
+/// "Records purge after a default 30 days"). Units-last (`_DAYS`). Tunability: **config-tunable** via
+/// the `runs.retention` config key / `TMX_RUNS_RETENTION` env var; `0` / `off` disables the sweep.
+pub const RUN_RETENTION_DEFAULT_DAYS: u64 = 30;
+const _: () = assert!(
+    RUN_RETENTION_DEFAULT_DAYS >= 1,
+    "the default retention window must span at least one day"
+);
+
 /// Grace period between a cancel signal and the hard stop, in milliseconds.
 ///
 /// Bounds how long in-flight adapters keep running after cancellation (from `--timeout` via the

@@ -17,6 +17,7 @@
 //! real, so a Flow needing a stubbed one fails preflight up front rather than at the stub.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[cfg(feature = "chat")]
 use tmx_adapters::chat::ChatCompletionsModel;
@@ -31,6 +32,7 @@ use tmx_adapters::idgen::Uuidv7Generator;
 use tmx_adapters::loader::FileSourceLoader;
 use tmx_adapters::process::OsProcessRunner;
 use tmx_adapters::resolve::FileReferenceResolver;
+use tmx_adapters::runstore::{LocalRunStore, StoringSink};
 use tmx_adapters::scheduler::SerialScheduler;
 use tmx_adapters::secret::BuiltinSecretResolver;
 use tmx_adapters::sink::{Format, ReporterSink};
@@ -39,6 +41,7 @@ use tmx_adapters::store::S3ObjectStore;
 use tmx_adapters::validate::JsonSchemaValidator;
 
 use tmx_core::error::RunError;
+use tmx_core::ports::driven::EventSink;
 use tmx_core::usecases::EngineRunFlow;
 use tmx_core::{
     AvailableCapabilities, Capability, PipelineRunner, Ports, PreflightPorts, RunConfig,
@@ -67,10 +70,12 @@ pub struct Composed {
     #[cfg(not(feature = "chat"))]
     chat: DenyingChatModel,
     clock: SystemClock,
-    // The composite streaming reporter: the always-on stderr progress plus the `--format`-selected
-    // stdout event stream (ndjson). The `json`/`pretty` final-state rendering is a terminal step the
-    // run command performs after the loop, not part of this streaming sink.
-    events: ReporterSink,
+    // The event sink handed to the core: the composite streaming reporter (always-on stderr progress
+    // plus the `--format`-selected stdout event stream), optionally teed through the run store so each
+    // masked event is also persisted (`StoringSink`). Boxed because the concrete type varies with
+    // whether the run is recorded; the `json`/`pretty` final-state rendering is a terminal step the run
+    // command performs after the loop, not part of this streaming sink.
+    events: Box<dyn EventSink>,
     secrets: BuiltinSecretResolver,
     schema: JsonSchemaValidator,
     references: FileReferenceResolver,
@@ -89,10 +94,26 @@ impl Composed {
     /// building the streaming reporter for the resolved `format`/`color`. Fails only if the embedded
     /// JSON Schema fails to compile — a typed [`RunError`], surfaced up front.
     ///
+    /// When `run_store` is `Some`, the streaming reporter is teed through it so each masked event is
+    /// also persisted to `./.tmx/runs/`; when `None` (`--no-store`), only the reporter runs and nothing
+    /// is recorded.
+    ///
     /// # Errors
     ///
     /// Returns the [`JsonSchemaValidator`] compile error if the embedded data-model schema is invalid.
-    pub fn new(base_dir: PathBuf, format: Format, color: bool) -> Result<Self, RunError> {
+    pub fn new(
+        base_dir: PathBuf,
+        format: Format,
+        color: bool,
+        run_store: Option<Arc<LocalRunStore>>,
+    ) -> Result<Self, RunError> {
+        let reporter = ReporterSink::for_format(format, color);
+        // Tee the reporter through the store only when this run is recorded; otherwise the plain
+        // reporter is the sink and no event is persisted.
+        let events: Box<dyn EventSink> = match &run_store {
+            Some(store) => Box::new(StoringSink::new(Box::new(reporter), Arc::clone(store))),
+            None => Box::new(reporter),
+        };
         Ok(Self {
             process: OsProcessRunner::new(),
             http: ReqwestHttpClient::new()?,
@@ -106,7 +127,7 @@ impl Composed {
             #[cfg(not(feature = "chat"))]
             chat: DenyingChatModel,
             clock: SystemClock::new(),
-            events: ReporterSink::for_format(format, color),
+            events,
             secrets: BuiltinSecretResolver::new(),
             schema: JsonSchemaValidator::new()?,
             references: FileReferenceResolver::new(base_dir),
@@ -126,7 +147,7 @@ impl Composed {
             store: &self.store,
             chat: &self.chat,
             clock: &self.clock,
-            events: &self.events,
+            events: self.events.as_ref(),
             secrets: &self.secrets,
             schema: &self.schema,
             reference_resolver: &self.references,
@@ -221,7 +242,7 @@ mod tests {
 
     #[test]
     fn composes_the_adapter_bundle_and_advertises_only_real_capabilities() {
-        let composed = Composed::new(PathBuf::from("."), Format::Json, false)
+        let composed = Composed::new(PathBuf::from("."), Format::Json, false, None)
             .expect("the embedded schema compiles");
         // The full port bundle is buildable — every driven port has a wired handle.
         let ports = composed.ports();

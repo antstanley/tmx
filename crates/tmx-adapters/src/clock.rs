@@ -51,6 +51,22 @@ impl Default for SystemClock {
     }
 }
 
+impl SystemClock {
+    /// The retention cutoff `days_ago` days before now, as an RFC 3339 UTC [`Timestamp`] — the value
+    /// the `RunStore`'s prune compares each run's `startedAt` against (08 §Run store: retention). The
+    /// subtraction saturates at the epoch rather than underflowing.
+    #[must_use]
+    pub fn cutoff_days_ago(&self, days_ago: u64) -> tmx_core::Timestamp {
+        let since_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let cutoff_secs = since_epoch
+            .as_secs()
+            .saturating_sub(days_ago.saturating_mul(SECONDS_PER_DAY));
+        tmx_core::Timestamp::new(format_rfc3339(cutoff_secs, since_epoch.subsec_millis()))
+    }
+}
+
 impl Clock for SystemClock {
     fn now(&self) -> tmx_core::Timestamp {
         // A pre-epoch system clock (duration_since fails) falls back to the epoch rather than
@@ -140,5 +156,33 @@ mod tests {
             "now() renders an RFC 3339 UTC instant, got {text:?}"
         );
         assert_eq!(text.len(), 24, "the rendered instant has the fixed width");
+    }
+
+    #[test]
+    fn cutoff_days_ago_is_an_earlier_fixed_width_instant() {
+        // The retention cutoff is a well-formed RFC 3339 instant strictly before now, and a larger
+        // window yields an earlier cutoff (the comparison the RunStore prunes on is chronological).
+        let clock = SystemClock::new();
+        let now = clock.now();
+        let cutoff = clock.cutoff_days_ago(30);
+        assert_eq!(cutoff.as_str().len(), 24, "the cutoff has the fixed width");
+        assert!(
+            cutoff.as_str() < now.as_str(),
+            "a 30-day cutoff precedes now ({} < {})",
+            cutoff.as_str(),
+            now.as_str()
+        );
+        let further = clock.cutoff_days_ago(365);
+        assert!(
+            further.as_str() < cutoff.as_str(),
+            "a wider window yields an earlier cutoff"
+        );
+        // Negative space: a saturating window never underflows past the epoch.
+        let huge = clock.cutoff_days_ago(u64::MAX);
+        assert!(
+            huge.as_str().starts_with("1970-01-01"),
+            "an enormous window saturates at the epoch, not underflow: {}",
+            huge.as_str()
+        );
     }
 }

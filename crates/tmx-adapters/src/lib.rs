@@ -17,6 +17,7 @@ pub mod idgen;
 pub mod loader;
 pub mod provider;
 pub mod resolve;
+pub mod runstore;
 pub mod scheduler;
 pub mod secret;
 pub mod sink;

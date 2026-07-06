@@ -73,6 +73,18 @@ fn main() {
                 exit_code(&error)
             }
         },
+        Command::Runs(runs_args) => match runtime.block_on(commands::runs::execute(runs_args)) {
+            Ok(result) => {
+                // Machine data on stdout: the run-store query result as one JSON object.
+                print_json(&result);
+                EXIT_SUCCESS
+            }
+            Err(error) => {
+                // A malformed id is `validation` (exit 3); a missing run is `resolution` (exit 4).
+                eprintln!("tmx: {error}");
+                exit_code(&error)
+            }
+        },
     };
     std::process::exit(code);
 }

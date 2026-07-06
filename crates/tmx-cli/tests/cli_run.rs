@@ -48,7 +48,10 @@ fn run_flow(flow: &Path, env: &[(&str, &str)]) -> Output {
 /// code. The extra args carry the reporter flags (`--format`, `--color`, …) the format tests exercise.
 fn run_flow_args(flow: &Path, extra: &[&str], env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tmx"));
-    command.arg("run").arg(flow);
+    // These e2e tests exercise the reporter/exit-code path, not the run store; `--no-store` keeps every
+    // run from writing a `./.tmx/runs/<id>/` dir into the crate source tree (the process cwd here is the
+    // package root, not a temp fixture) while leaving the observed stdout/stderr/exit behaviour unchanged.
+    command.arg("run").arg(flow).arg("--no-store");
     for arg in extra {
         command.arg(arg);
     }
