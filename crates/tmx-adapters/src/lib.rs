@@ -32,3 +32,8 @@ pub mod process;
 // `--no-default-features`. This is the only module that reaches for `reqwest`.
 #[cfg(feature = "http")]
 pub mod http;
+
+// The local-filesystem `file` adapter, gated behind the `fs` Cargo feature (on by default) so a
+// minimal build can drop it. It reaches only for `std::fs` — no async-runtime or heavy-I/O edge.
+#[cfg(feature = "fs")]
+pub mod fs;

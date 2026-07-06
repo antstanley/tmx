@@ -85,8 +85,12 @@ futures-util = { version = "0.3", optional = true, default-features = false, fea
 # while `--no-default-features` drops tokio for a minimal build. It also gates the concurrent
 # `TokioScheduler`, which shares the same `tokio` runtime edge (plus `futures-util`).
 [features]
-default = ["process", "http"]
+default = ["process", "http", "fs"]
 process = ["dep:tokio", "dep:futures-util"]
+# The local-filesystem (`file`) adapter. It reaches only for `std::fs`, so it pulls no extra
+# dependency — the feature exists solely to gate the module so a minimal build can drop it, keeping
+# the `file` executor on the same opt-out footing as the other effecting adapters.
+fs = []
 # The HTTP (`fetch`) adapter and its `reqwest`/`tokio` edge, on by default so the standard
 # `cargo nextest run` exercises the real-request adapter tests against a local server. `--no-default-features`
 # drops it (and `reqwest`) for a minimal build. It shares the same `tokio` runtime edge as `process`.
