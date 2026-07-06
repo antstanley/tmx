@@ -7,15 +7,19 @@
 //! the `exec`/`assert` path — the real process runner, source loader, reference resolver, schema
 //! validator, system clock, UUIDv7 id generator, `env` secret resolver, and the stderr progress
 //! reporter — plus the serial scheduler (used once `map` fan-out lands, task 18); task 20 adds the
-//! real `reqwest` HTTP client for `fetch` and task 21 the real [`LocalFileSystem`] for `file`,
-//! leaving **denying stubs** for the not-yet-built `store`/`chat` executors. The capability check
+//! real `reqwest` HTTP client for `fetch` and task 21 the real [`LocalFileSystem`] for `file`; task
+//! 22 wires the real `S3ObjectStore` for `store` behind the opt-in `store` Cargo feature (the
+//! denying stub stands in when it is off), leaving a **denying stub** for the not-yet-built `chat`
+//! executor. The capability check
 //! ([`available_capabilities`](Composed::available_capabilities)) advertises only the ports that are
 //! real, so a Flow needing a stubbed one fails preflight up front rather than at the stub.
 
 use std::path::PathBuf;
 
 use tmx_adapters::clock::SystemClock;
-use tmx_adapters::deny::{DenyingChatModel, DenyingObjectStore};
+use tmx_adapters::deny::DenyingChatModel;
+#[cfg(not(feature = "store"))]
+use tmx_adapters::deny::DenyingObjectStore;
 use tmx_adapters::fs::LocalFileSystem;
 use tmx_adapters::http::ReqwestHttpClient;
 use tmx_adapters::idgen::Uuidv7Generator;
@@ -25,6 +29,8 @@ use tmx_adapters::report::StderrProgressSink;
 use tmx_adapters::resolve::FileReferenceResolver;
 use tmx_adapters::scheduler::SerialScheduler;
 use tmx_adapters::secret::EnvSecretResolver;
+#[cfg(feature = "store")]
+use tmx_adapters::store::S3ObjectStore;
 use tmx_adapters::validate::JsonSchemaValidator;
 
 use tmx_core::error::RunError;
@@ -43,6 +49,11 @@ pub struct Composed {
     process: OsProcessRunner,
     http: ReqwestHttpClient,
     file: LocalFileSystem,
+    // Real S3-compatible object store when the `store` feature is on, else the denying stub. The
+    // capability check advertises `store` as present only in the former case.
+    #[cfg(feature = "store")]
+    store: S3ObjectStore,
+    #[cfg(not(feature = "store"))]
     store: DenyingObjectStore,
     chat: DenyingChatModel,
     clock: SystemClock,
@@ -72,6 +83,9 @@ impl Composed {
             process: OsProcessRunner::new(),
             http: ReqwestHttpClient::new()?,
             file: LocalFileSystem::new(),
+            #[cfg(feature = "store")]
+            store: S3ObjectStore::from_env()?,
+            #[cfg(not(feature = "store"))]
             store: DenyingObjectStore,
             chat: DenyingChatModel,
             clock: SystemClock::new(),
@@ -115,16 +129,20 @@ impl Composed {
 
     /// The effecting capabilities that are wired and *real* in this build: `exec`/`run` via the
     /// process runner, `fetch` via the `reqwest` HTTP client, `file` via the local filesystem, and
-    /// structured secrets via the `env` resolver. `store`/`chat` are still denying stubs, so they are
+    /// structured secrets via the `env` resolver. `store` is real only when the `store` Cargo feature
+    /// wires the S3-compatible object store; `chat` is still a denying stub. An unwired capability is
     /// advertised as **absent** — a Flow needing one fails the capability check up front
     /// (03 §Capability check) rather than reaching a stub.
     #[must_use]
     pub fn available_capabilities(&self) -> AvailableCapabilities {
-        AvailableCapabilities::none()
+        let caps = AvailableCapabilities::none()
             .with(Capability::Process)
             .with(Capability::Http)
             .with(Capability::File)
-            .with(Capability::Secret)
+            .with(Capability::Secret);
+        #[cfg(feature = "store")]
+        let caps = caps.with(Capability::Store);
+        caps
     }
 
     /// The id generator handle (a run id is minted once, up front, outside the port bundle).
@@ -194,9 +212,15 @@ mod tests {
             caps.has(Capability::File),
             "file is wired to the local filesystem and real"
         );
+        #[cfg(not(feature = "store"))]
         assert!(
             !caps.has(Capability::Store),
-            "store is a denying stub, not real"
+            "store is a denying stub, not real without the `store` feature"
+        );
+        #[cfg(feature = "store")]
+        assert!(
+            caps.has(Capability::Store),
+            "store is wired to the S3 object store and real with the `store` feature"
         );
         assert!(
             !caps.has(Capability::Chat),

@@ -27,5 +27,12 @@ clap = { version = "4", features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
+# The S3-compatible object-store (`store`) executor is opt-in: this feature forwards to the adapter's
+# own `store` feature so the composition root wires the real `S3ObjectStore` (and advertises the
+# `store` capability) instead of the denying stub. Off by default, mirroring `tmx-adapters`.
+[features]
+default = []
+store = ["tmx-adapters/store"]
+
 [lints]
 workspace = true

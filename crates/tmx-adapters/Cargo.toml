@@ -71,6 +71,13 @@ reqwest = { version = "0.12", optional = true, default-features = false, feature
     "rustls-tls",
 ] }
 
+# The S3-compatible object-store (`store`) adapter (task 22). Rather than pull a heavyweight S3 SDK,
+# the adapter signs requests with AWS Signature Version 4 and issues them over the same `reqwest`
+# client the `fetch` adapter uses; `ring` supplies the two signing primitives (SHA-256 and
+# HMAC-SHA-256). `ring` is already present transitively via `rustls`, so naming it directly adds no
+# new compiled crate — it is `optional` and pulled in solely by the `store` feature.
+ring = { version = "0.17", optional = true }
+
 # The concurrent `TokioScheduler` (task 18) drives up to `concurrency` bounded, non-`'static` element
 # futures at once and collects them in index order. `futures-util`'s `join_all` is the order-preserving
 # concurrent driver; combined with a `tokio::sync::Semaphore` it bounds in-flight work without
@@ -95,6 +102,10 @@ fs = []
 # `cargo nextest run` exercises the real-request adapter tests against a local server. `--no-default-features`
 # drops it (and `reqwest`) for a minimal build. It shares the same `tokio` runtime edge as `process`.
 http = ["dep:reqwest", "dep:tokio"]
+# The S3-compatible object-store (`store`) adapter and its `reqwest`/`tokio`/`ring` edge. Opt-in (not
+# in `default`): a build enables it explicitly when it needs the `store` executor, so a minimal build
+# carries no S3 signing/HTTP edge. It shares the same `reqwest`/`tokio` stack as `http`.
+store = ["dep:reqwest", "dep:tokio", "dep:ring"]
 
 # Test-only. `indexmap` is the ordered map the `ProcessSpec.env` field uses; the process-adapter
 # tests build specs directly, so they need to name the same map type the port declares.

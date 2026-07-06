@@ -37,3 +37,9 @@ pub mod http;
 // minimal build can drop it. It reaches only for `std::fs` — no async-runtime or heavy-I/O edge.
 #[cfg(feature = "fs")]
 pub mod fs;
+
+// The S3-compatible object-store `store` adapter, gated behind the `store` Cargo feature (opt-in, not
+// in `default`). It signs requests with AWS SigV4 (`ring` for the hash primitives) and issues them
+// over `reqwest`, so a minimal build drops it and its `reqwest`/`tokio`/`ring` edge entirely.
+#[cfg(feature = "store")]
+pub mod store;

@@ -1433,6 +1433,7 @@ dependencies = [
  "indexmap",
  "jsonschema",
  "reqwest",
+ "ring",
  "serde_json",
  "serde_yaml_ng",
  "tmx-core",
