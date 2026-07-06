@@ -33,6 +33,12 @@ async-trait = "0.1"
 # `tmx-core` conformance tests already use.
 jsonschema = { version = "0.46", default-features = false }
 
+# The `IdGenerator` adapter (task 17): a time-ordered UUIDv7 per run. `uuid` is the canonical
+# generator; the `v7` feature pulls the timestamp+random layout (getrandom-backed). It lives here in
+# the impure adapters crate, never in a pure crate. Rendered lowercase-hyphenated, a UUIDv7 matches
+# the `RunId` schema pattern exactly, so `RunId::new` cannot reject it.
+uuid = { version = "1", features = ["v7"] }
+
 # The OS-process `ProcessRunner` adapter (task 16). `tokio` is the async runtime the effecting
 # boundary awaits — the only async runtime in the tree, and it lives *here*, never in a pure crate
 # (enforced by scripts/purity.sh). It is `optional` and pulled in solely by the `process` feature so

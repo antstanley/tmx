@@ -11,8 +11,14 @@
 //! Depends on `tmx-core` (the port traits it implements) and `tmx-schema`. The adapters themselves
 //! arrive in tasks 13–24.
 
+pub mod clock;
+pub mod deny;
+pub mod idgen;
 pub mod loader;
+pub mod report;
 pub mod resolve;
+pub mod scheduler;
+pub mod secret;
 pub mod validate;
 
 // The tokio-runtime seam: the OS-process adapter and its `tokio` dependency are confined behind the
