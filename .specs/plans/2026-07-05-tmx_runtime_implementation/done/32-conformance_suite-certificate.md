@@ -1,7 +1,7 @@
 # Done Certificate — Task 32: Golden-Flow conformance suite
 
 **Task:** [32-conformance_suite.md](32-conformance_suite.md) · **Plan:** [plan.md](../plan.md)
-**State:** Authored 2026-07-05 — unverified
+**State:** Validated 2026-07-06 — discharged by the verifier (all four obligations SATISFIED)
 
 > This certificate is a verification protocol for Task 32. A validating agent discharges it:
 > for each obligation, collect the named evidence, run the named checks, set the Status, then
@@ -40,7 +40,16 @@ names (a file location, a test result, or an execution trace) — not by asserti
     (create → per-task → destroy) and confirm the ordering matches; confirm determinism is sourced
     only from the fixed `Clock`/`IdGenerator`/`SerialScheduler` fakes (no `SystemTime::now()`, no
     randomness, no `TokioScheduler` in any test body).
-  - *Status:* ☐ unverified
+  - *Status:* ☑ SATISFIED — 11 golden Flows in `crates/tmx-conformance/tests/golden_flows.rs`; the
+    `golden` helper runs every Flow twice over two fresh bundles and asserts byte-identical NDJSON
+    event stream + final state + run id. Coverage verified by reading: exec, assert, fetch, file,
+    store, chat-completion, flow import, if-skip through `EngineRunFlow`; map/eval through
+    `run_map`/`run_eval` over `SerialScheduler` (the sequential runner rejects map/eval with
+    `task_type_unsupported` by design — dispatch.rs:117 — so the fan-out functions ARE the real
+    path). Hooks create/change/destroy/error all asserted; flagship test pins the full lifecycle
+    stream. Grep confirms no SystemTime/rand/TokioScheduler in any test. Note: the `run` task type
+    (exec's interpreter twin, same ProcessRunner path) is not in this enumeration and has no golden
+    Flow — an advisory gap, not an obligation breach.
 
 - **O2 — Every limit has below/at/above boundary coverage and every required negative-space case (leaked secret, over-cap, too-deep, duplicate name) is present and fails closed (negative space).**
   - *Claim:* `STATE_SIZE_MAX_BYTES`, `FANOUT_WIDTH_MAX`, `FLOW_DEPTH_MAX`, `TASKS_PER_FLOW_MAX`,
@@ -54,7 +63,17 @@ names (a file location, a test result, or an execution trace) — not by asserti
   - *Checks:* confirm each boundary trio sits exactly one below / at / one above its named constant;
     confirm each negative-space case fails closed — a typed error naming the limit or violation, never
     a panic, a silent truncation, or an unmasked leak.
-  - *Status:* ☐ unverified
+  - *Status:* ☑ SATISFIED — `tests/limit_boundaries.rs` carries a below/at/above trio for all seven
+    constants, each computed FROM the `tmx-schema::limits` constant (verified by reading; no
+    hard-coded limit literals). Above cases assert the documented typed errors:
+    `state_cap_exceeded`, `json_too_deep`, `flow_depth_exceeded`, `too_many_tasks`,
+    `fanout_too_wide`, `expr_too_long`, `expr_too_deep`. STATE_SIZE (512 MiB, impractical to
+    materialise) is probed byte-exactly against a narrowed configured cap through the same
+    `StateBuilder::with_cap` guard and separately pinned to the named constant (default = ceiling,
+    over-ceiling clamped) — the merge.rs pattern. All four negative-space cases present in
+    `tests/negative_space.rs` and pass; the over-cap guard was verified live by widening the cap
+    (test failed as it must) and reverting (test passed). Leaked-secret case asserts both absence
+    of the raw value AND presence of `[REDACTED]` in state and NDJSON stream.
 
 - **O3 — Meets the repo definition of done.**
   - *Claim:* the conformance tier (which IS the `cargo nextest run` slow tier) passes, clippy and
@@ -64,7 +83,12 @@ names (a file location, a test result, or an execution trace) — not by asserti
     --all-targets --all-features -D warnings`, and `cargo fmt --all --check` — expect all clean. Run
     `cargo nextest run` a second time and confirm the golden Flows' event stream + final state are
     byte-identical to the first run.
-  - *Status:* ☐ unverified
+  - *Status:* ☑ SATISFIED — independently run by the verifier from the repo root:
+    `cargo fmt --all --check` clean; `cargo clippy --all-targets --all-features -- -D warnings`
+    clean; `cargo nextest run` 447/447 passed (26 new conformance tests); `cargo build` clean;
+    `scripts/purity.sh` green (proptest + transitive deps confined to tmx-conformance;
+    tmx-schema/tmx-core/tmx-testkit unchanged). Determinism is asserted inside every golden test
+    (two fresh bundles per test, byte-identical streams), and the tier as a whole passed twice.
 
 - **O4 — Reviewable: run the conformance tier twice and confirm identical results, then inspect one golden Flow's asserted event stream against the spec's lifecycle (Reviewable).**
   - *Claim:* a reviewer can run the conformance tier twice, observe byte-for-byte identical results,
@@ -74,7 +98,13 @@ names (a file location, a test result, or an execution trace) — not by asserti
     recorded event stream + final state each run, and diff the two — expect an empty diff; then open
     one golden Flow's expected event-stream fixture and check it against the
     [04-execution-engine](../../../04-execution-engine.md) lifecycle (create → per-task → destroy).
-  - *Status:* ☐ unverified
+  - *Status:* ☑ SATISFIED — `cargo nextest run -p tmx-conformance` run twice by the verifier:
+    26/26 pass both runs, identically. The flagship
+    `golden_exec_and_assert_with_create_and_destroy_hooks` asserts the exact stream
+    run.start → hook(create, bracketing its own exec) → per-task → hook(destroy) → run.finish,
+    matching 04-execution-engine's create → per-task → destroy order (destroy before run.finish,
+    per spec step 3; create fires immediately after run.start per the runner's documented design —
+    runner.rs:255 — a pre-existing task-12 ordering, faithfully pinned).
 
 ## Regression check
 
@@ -94,6 +124,16 @@ names (a file location, a test result, or an execution trace) — not by asserti
 ## Conclusion
 
 <!-- Validator derives this from the obligation statuses and the regression check, per the rubric. -->
-VERDICT: ☐ (DONE | PARTIAL | NOT_DONE)
-CONFIDENCE: ☐ (high | medium | low)
-SUMMARY: ☐
+VERDICT: DONE
+CONFIDENCE: high
+SUMMARY: All four obligations SATISFIED on independently-run evidence: 26 deterministic conformance
+tests (11 golden Flows asserting byte-identical two-run streams/state/ids over the testkit fakes,
+7 below/at/above limit trios computed from the named tmx-schema constants, 4 fail-closed
+negative-space cases, 3 proptest properties with persistence disabled), all green under
+fmt/clippy/nextest (447/447) and the purity gate; the residue items check out — proptest covers the
+three named services and the tier runs in gate.sh's workspace `cargo nextest run` (the repo's CI
+surface; no `#[ignore]` anywhere since no case needs a real backend). No production code changed.
+Advisory (non-blocking): the `run` task type (exec's interpreter twin over the same ProcessRunner
+path) has no golden Flow of its own; the spec prose of 04-execution-engine step 1 lists the create
+hook before `run.start` while the engine (and the golden) order run.start first — a pre-existing
+task-12/spec wording nuance, not a task-32 defect.

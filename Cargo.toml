@@ -6,6 +6,7 @@ members = [
     "crates/tmx-adapters",
     "crates/tmx-testkit",
     "crates/tmx-cli",
+    "crates/tmx-conformance",
 ]
 
 [workspace.package]

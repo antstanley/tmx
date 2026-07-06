@@ -1,0 +1,32 @@
+[package]
+name = "tmx-conformance"
+description = "Workspace-level golden-Flow conformance suite: golden Flows over recorded adapters, limit-boundary coverage, negative-space cases, and the property-test tier."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+# The conformance tier drives the WHOLE engine (tmx-core) over the deterministic fakes
+# (tmx-testkit) and asserts against the schema-level limits (tmx-schema). It is a test-only crate:
+# the shared harness in `src/lib.rs` is the injectable fake bundle + run helpers, and every actual
+# case lives under `tests/`. It is deliberately OUTSIDE the purity boundary (not in
+# scripts/purity.sh's PURE_CRATES), so it may take the `proptest` dev-dependency for the
+# property-test tier without touching the pure core's dependency graph.
+[dependencies]
+tmx-core = { path = "../tmx-core" }
+tmx-schema = { path = "../tmx-schema" }
+tmx-testkit = { path = "../tmx-testkit" }
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+
+[dev-dependencies]
+# Property-test tier only (interpolation parser, matcher engine, state merge). A dev-dependency of
+# this test crate alone — it never enters tmx-core / tmx-schema / tmx-testkit, so the purity gate
+# stays green. Failure persistence is disabled per-suite so the tree gains no regression files and
+# the tier stays reproducible.
+proptest = "1"
+
+[lints]
+workspace = true
