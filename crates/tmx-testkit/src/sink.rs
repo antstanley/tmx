@@ -4,15 +4,17 @@
 //! runner reported. Because the events are captured, two runs over the same fresh bundle yield
 //! byte-identical streams — the reproducibility the determinism obligation checks.
 //!
-//! ## Forward reference — Masker routing (task 09)
+//! ## Masker routing
 //!
-//! Task 06's step 3 says this sink "asserts it routed every payload through the Masker." The Masker
-//! is task 09 and does not exist yet, so that assertion is a **deferred** forward reference: this
-//! sink records the raw stream today, and the Masker-routing check is wired when task 09 lands. No
-//! behaviour here depends on the Masker, so the omission does not weaken the recording contract.
+//! Task 06's step 3 says this sink "asserts it routed every payload through the Masker." The
+//! [`EventSink`] port now carries a [`Masked<Event>`] (task 26), so this sink asserts the payload's
+//! non-zero origin — the paired runtime boundary check every real sink performs — before recording
+//! the inner event. A payload that skipped the Masker (origin `0`) trips the assertion, so the
+//! recording fake cannot silently capture un-routed data.
 
 use std::sync::Mutex;
 
+use tmx_core::mask::Masked;
 use tmx_core::ports::driven::EventSink;
 use tmx_core::{Event, RunError};
 
@@ -56,9 +58,16 @@ impl RecordingEventSink {
 
 #[async_trait::async_trait]
 impl EventSink for RecordingEventSink {
-    async fn emit(&self, event: &Event) -> Result<(), RunError> {
+    async fn emit(&self, event: &Masked<Event>) -> Result<(), RunError> {
+        // The output-port half of the masking boundary: a recorded payload must have routed through
+        // the Masker (a non-zero origin). A forged un-routed payload trips this, so the fake cannot
+        // capture data that bypassed redaction.
+        assert!(
+            event.origin() != 0,
+            "RecordingEventSink received an event that did not route through the Masker"
+        );
         if let Ok(mut events) = self.events.lock() {
-            events.push(event.clone());
+            events.push(event.get().clone());
         }
         Ok(())
     }

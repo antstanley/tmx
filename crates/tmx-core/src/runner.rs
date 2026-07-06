@@ -768,40 +768,10 @@ pub(crate) async fn emit_event(
     let refs: Vec<&str> = resolved_secrets.iter().map(String::as_str).collect();
     // Negative space: nothing leaves the core until every resolved secret is registered.
     masker.assert_ready(&refs);
-    let masked = mask_event(masker, &event);
+    // Seal the event as a `Masked<Event>` (redacting `task.finish` output / `task.error` message and
+    // stamping the run Masker's origin); the sink asserts that origin before it emits.
+    let masked = masker.redact_event(&event);
     ports.events.emit(&masked).await
-}
-
-/// Redact an event's leaked-secret surface: the `task.finish` output and the `task.error` message
-/// both pass through the Masker (two of the independent output boundaries 04 §Secrets & masking names).
-fn mask_event(masker: &Masker, event: &Event) -> Event {
-    match event {
-        Event::TaskFinish {
-            name,
-            status,
-            ms,
-            output,
-        } => Event::TaskFinish {
-            name: name.clone(),
-            status: *status,
-            ms: *ms,
-            output: output
-                .as_ref()
-                .map(|value| masker.redact_value(value).into_inner().into_owned()),
-        },
-        Event::TaskError { name, error } => Event::TaskError {
-            name: name.clone(),
-            error: mask_error(masker, error),
-        },
-        other => other.clone(),
-    }
-}
-
-/// Redact a [`RunError`]'s human message (an adapter could echo a secret into it).
-fn mask_error(masker: &Masker, error: &RunError) -> RunError {
-    let mut redacted = error.clone();
-    redacted.message = masker.redact_line(&error.message).into_inner().into_owned();
-    redacted
 }
 
 /// Resolve the effective context for a task: the inherited (Flow) env/secrets combined with the

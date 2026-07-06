@@ -30,10 +30,10 @@ use tmx_adapters::http::ReqwestHttpClient;
 use tmx_adapters::idgen::Uuidv7Generator;
 use tmx_adapters::loader::FileSourceLoader;
 use tmx_adapters::process::OsProcessRunner;
-use tmx_adapters::report::StderrProgressSink;
 use tmx_adapters::resolve::FileReferenceResolver;
 use tmx_adapters::scheduler::SerialScheduler;
 use tmx_adapters::secret::BuiltinSecretResolver;
+use tmx_adapters::sink::{Format, ReporterSink};
 #[cfg(feature = "store")]
 use tmx_adapters::store::S3ObjectStore;
 use tmx_adapters::validate::JsonSchemaValidator;
@@ -67,7 +67,10 @@ pub struct Composed {
     #[cfg(not(feature = "chat"))]
     chat: DenyingChatModel,
     clock: SystemClock,
-    events: StderrProgressSink,
+    // The composite streaming reporter: the always-on stderr progress plus the `--format`-selected
+    // stdout event stream (ndjson). The `json`/`pretty` final-state rendering is a terminal step the
+    // run command performs after the loop, not part of this streaming sink.
+    events: ReporterSink,
     secrets: BuiltinSecretResolver,
     schema: JsonSchemaValidator,
     references: FileReferenceResolver,
@@ -82,13 +85,14 @@ pub struct Composed {
 }
 
 impl Composed {
-    /// Wire the adapter set, rooting reference resolution at `base_dir` (the Flow's directory). Fails
-    /// only if the embedded JSON Schema fails to compile — a typed [`RunError`], surfaced up front.
+    /// Wire the adapter set, rooting reference resolution at `base_dir` (the Flow's directory) and
+    /// building the streaming reporter for the resolved `format`/`color`. Fails only if the embedded
+    /// JSON Schema fails to compile — a typed [`RunError`], surfaced up front.
     ///
     /// # Errors
     ///
     /// Returns the [`JsonSchemaValidator`] compile error if the embedded data-model schema is invalid.
-    pub fn new(base_dir: PathBuf) -> Result<Self, RunError> {
+    pub fn new(base_dir: PathBuf, format: Format, color: bool) -> Result<Self, RunError> {
         Ok(Self {
             process: OsProcessRunner::new(),
             http: ReqwestHttpClient::new()?,
@@ -102,7 +106,7 @@ impl Composed {
             #[cfg(not(feature = "chat"))]
             chat: DenyingChatModel,
             clock: SystemClock::new(),
-            events: StderrProgressSink::new(),
+            events: ReporterSink::for_format(format, color),
             secrets: BuiltinSecretResolver::new(),
             schema: JsonSchemaValidator::new()?,
             references: FileReferenceResolver::new(base_dir),
@@ -217,7 +221,8 @@ mod tests {
 
     #[test]
     fn composes_the_adapter_bundle_and_advertises_only_real_capabilities() {
-        let composed = Composed::new(PathBuf::from(".")).expect("the embedded schema compiles");
+        let composed = Composed::new(PathBuf::from("."), Format::Json, false)
+            .expect("the embedded schema compiles");
         // The full port bundle is buildable — every driven port has a wired handle.
         let ports = composed.ports();
         let _ = ports.process; // touch the bundle so the borrow is exercised

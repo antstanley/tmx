@@ -53,6 +53,45 @@ pub struct RunArgs {
     /// Run in the current process with no provider lifecycle at all (`--no-env` is an alias).
     #[arg(long, visible_alias = "no-env")]
     pub local: bool,
+
+    /// The stdout reporter: `pretty` (human summary; TTY default), `json` (final state object; pipe
+    /// default), or `ndjson` (one event per line). Overrides `TMX_FORMAT` and the TTY default.
+    #[arg(long, value_enum)]
+    pub format: Option<FormatArg>,
+
+    /// Force ANSI colour on the stderr progress, overriding the TTY / `NO_COLOR` default.
+    #[arg(long, conflicts_with = "no_color")]
+    pub color: bool,
+
+    /// Disable ANSI colour on the stderr progress (as `NO_COLOR` does).
+    #[arg(long = "no-color")]
+    pub no_color: bool,
+}
+
+/// The `--format` value on the CLI surface — the clap mirror of
+/// [`tmx_adapters::sink::Format`](crate::compose). Kept local to the arg surface so `clap`'s derive
+/// owns the token vocabulary; `config` maps it to the adapter [`Format`](tmx_adapters::sink::Format).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum FormatArg {
+    /// Human run summary; stdout carries nothing (the human reads the stderr progress).
+    Pretty,
+    /// The final Pipeline state as one masked JSON object on stdout.
+    Json,
+    /// One masked event per line on stdout.
+    Ndjson,
+}
+
+impl FormatArg {
+    /// Map the CLI arg to the adapter [`Format`](tmx_adapters::sink::Format) the reporter selects on.
+    #[must_use]
+    pub fn to_format(self) -> tmx_adapters::sink::Format {
+        use tmx_adapters::sink::Format;
+        match self {
+            FormatArg::Pretty => Format::Pretty,
+            FormatArg::Json => Format::Json,
+            FormatArg::Ndjson => Format::Ndjson,
+        }
+    }
 }
 
 /// Arguments for `tmx env` — a provider lifecycle method (or an `up`/`down` aggregate) against the
@@ -169,6 +208,47 @@ mod tests {
             Cli::try_parse_from(["tmx", "run", "flow.yaml", "--no-env"]).expect("--no-env parses"),
         );
         assert!(no_env.local, "--no-env is an alias for --local");
+    }
+
+    #[test]
+    fn run_parses_the_format_and_color_flags() {
+        // --format selects the reporter, mapping to the adapter Format; --color/--no-color set the
+        // colour flags and are mutually exclusive.
+        let ndjson = run_args(
+            Cli::try_parse_from(["tmx", "run", "flow.yaml", "--format", "ndjson"])
+                .expect("--format ndjson parses"),
+        );
+        assert_eq!(
+            ndjson.format.map(FormatArg::to_format),
+            Some(tmx_adapters::sink::Format::Ndjson),
+            "--format ndjson maps to the adapter Format"
+        );
+        assert!(
+            !ndjson.color && !ndjson.no_color,
+            "colour flags default off"
+        );
+
+        let colored = run_args(
+            Cli::try_parse_from(["tmx", "run", "flow.yaml", "--color"]).expect("--color parses"),
+        );
+        assert!(colored.color, "--color is captured");
+
+        let no_color = run_args(
+            Cli::try_parse_from(["tmx", "run", "flow.yaml", "--no-color"])
+                .expect("--no-color parses"),
+        );
+        assert!(no_color.no_color, "--no-color is captured");
+
+        // Negative space: --color and --no-color conflict (clap rejects), and an unknown format is a
+        // usage error — neither is silently accepted.
+        assert!(
+            Cli::try_parse_from(["tmx", "run", "flow.yaml", "--color", "--no-color"]).is_err(),
+            "--color and --no-color are mutually exclusive"
+        );
+        assert!(
+            Cli::try_parse_from(["tmx", "run", "flow.yaml", "--format", "yaml"]).is_err(),
+            "an unknown --format value is rejected"
+        );
     }
 
     #[test]

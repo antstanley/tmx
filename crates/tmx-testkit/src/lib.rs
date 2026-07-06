@@ -108,6 +108,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use tmx_core::mask::Masker;
     use tmx_core::ports::driven::{
         ArtifactKind, ChatModel, Clock, EnvironmentProvider, EventSink, FileOp, FileResult,
         FileSystem, HttpClient, HttpRequest, IdGenerator, ObjectStore, ProcessKind, ProcessRunner,
@@ -153,31 +154,34 @@ mod tests {
     {
         let run_id = ids.new_run_id();
         let next_id = ids.new_run_id();
-        sink.emit(&Event::RunStart {
+        // The `EventSink` port accepts a proven-routed `Masked<Event>`; seal each event through a
+        // Masker exactly as the real runner does before emitting it.
+        let masker = Masker::new();
+        sink.emit(&masker.redact_event(&Event::RunStart {
             id: run_id.clone(),
             flow: "deploy".to_string(),
-        })
+        }))
         .await
         .expect("sink accepts run.start");
-        sink.emit(&Event::TaskStart {
+        sink.emit(&masker.redact_event(&Event::TaskStart {
             name: "build".to_string(),
-        })
+        }))
         .await
         .expect("sink accepts task.start");
         let out = process.run(sample_spec()).await.expect("process runs");
-        sink.emit(&Event::TaskFinish {
+        sink.emit(&masker.redact_event(&Event::TaskFinish {
             name: "build".to_string(),
             status: tmx_core::TaskStatus::Ok,
             ms: out.ms,
             output: None,
-        })
+        }))
         .await
         .expect("sink accepts task.finish");
-        sink.emit(&Event::RunFinish {
+        sink.emit(&masker.redact_event(&Event::RunFinish {
             id: run_id.clone(),
             status: RunStatus::Ok,
             ms: Milliseconds(0),
-        })
+        }))
         .await
         .expect("sink accepts run.finish");
         vec![run_id, next_id]

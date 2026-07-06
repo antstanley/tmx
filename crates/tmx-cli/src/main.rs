@@ -24,7 +24,7 @@ mod config;
 use clap::Parser;
 use serde_json::Value;
 
-use tmx_core::{ErrorCategory, RunError, RunRecord, RunStatus};
+use tmx_core::{ErrorCategory, RunError, RunStatus};
 
 use crate::args::{Cli, Command};
 
@@ -50,8 +50,9 @@ fn main() {
     let code = match cli.command {
         Command::Run(run_args) => match runtime.block_on(commands::run::execute(run_args)) {
             Ok(record) => {
-                // Machine data on stdout: the masked final Pipeline state as one JSON object.
-                print_final_state(&record);
+                // The run command already rendered the stdout machine data for the selected
+                // `--format` (the final-state object, the ndjson stream, or nothing for pretty); here
+                // we only map the terminal status to an exit code.
                 exit_for_status(record.status)
             }
             Err(error) => {
@@ -74,21 +75,6 @@ fn main() {
         },
     };
     std::process::exit(code);
-}
-
-/// Write the masked final Pipeline state as one JSON object to **stdout** — the sole stdout output, so
-/// `tmx run flow.yaml | jq` parses it with no flag. A run that captured no state prints `{}`.
-fn print_final_state(record: &RunRecord) {
-    let state = record.final_state.as_ref().map_or_else(
-        || Value::Object(serde_json::Map::new()),
-        |s| s.as_value().clone(),
-    );
-    match serde_json::to_string_pretty(&state) {
-        Ok(text) => println!("{text}"),
-        // A state that fails to serialise is unexpected (it is a JSON object by construction); emit an
-        // empty object so stdout still carries valid JSON rather than nothing or a partial fragment.
-        Err(_) => println!("{{}}"),
-    }
 }
 
 /// Write a JSON value as one pretty object to **stdout** — the machine-data channel for `tmx env`'s

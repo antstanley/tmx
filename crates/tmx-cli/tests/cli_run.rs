@@ -41,8 +41,17 @@ struct Output {
 
 /// Run `tmx run <flow>` with the given extra env vars, capturing stdout/stderr and the exit code.
 fn run_flow(flow: &Path, env: &[(&str, &str)]) -> Output {
+    run_flow_args(flow, &[], env)
+}
+
+/// Run `tmx run <flow> <extra args…>` with the given env vars, capturing stdout/stderr and the exit
+/// code. The extra args carry the reporter flags (`--format`, `--color`, …) the format tests exercise.
+fn run_flow_args(flow: &Path, extra: &[&str], env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tmx"));
     command.arg("run").arg(flow);
+    for arg in extra {
+        command.arg(arg);
+    }
     for (key, value) in env {
         command.env(key, value);
     }
@@ -402,6 +411,169 @@ fn an_unrequested_secret_is_never_resolved_or_bound() {
         state.get("UNUSED").is_none(),
         "the unrequested secret is never bound into scope, got {state:?}"
     );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn format_ndjson_streams_the_ordered_event_set_to_stdout() {
+    // O1/O4: `--format ndjson` puts one JSON Event per line on stdout — the ordered canonical stream,
+    // run.start first and run.finish last — while the human progress stays on stderr. stdout is the
+    // event stream, NOT the final-state object.
+    let dir = temp_dir("fmt-ndjson");
+    let flow = write(&dir, "flow.yaml", PASSING_YAML);
+    let out = run_flow_args(&flow, &["--format", "ndjson"], &[]);
+
+    assert_eq!(
+        out.code,
+        Some(0),
+        "the ndjson run exits 0; stderr: {}",
+        out.stderr
+    );
+
+    // Every stdout line is a JSON object internally tagged on `event`.
+    let tags: Vec<String> = out
+        .stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let value: Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("each ndjson line is JSON, got {line:?}: {e}"));
+            value["event"]
+                .as_str()
+                .unwrap_or_else(|| panic!("each event carries an `event` tag: {line}"))
+                .to_string()
+        })
+        .collect();
+
+    assert_eq!(
+        tags.first().map(String::as_str),
+        Some("run.start"),
+        "run.start opens the stream"
+    );
+    assert_eq!(
+        tags.last().map(String::as_str),
+        Some("run.finish"),
+        "run.finish closes the stream"
+    );
+    assert!(
+        tags.iter().any(|t| t == "task.finish"),
+        "task.finish events are streamed, got {tags:?}"
+    );
+    // Ordering: the build task finishes before the check task starts (the sequential loop order).
+    let build_finish = out
+        .stdout
+        .lines()
+        .position(|l| l.contains("\"event\":\"task.finish\"") && l.contains("\"build\""));
+    let check_start = out
+        .stdout
+        .lines()
+        .position(|l| l.contains("\"event\":\"task.start\"") && l.contains("\"check\""));
+    assert!(
+        matches!((build_finish, check_start), (Some(b), Some(c)) if b < c),
+        "events stream in execution order (build.finish before check.start), got {tags:?}"
+    );
+
+    // stdout is the event stream, not the final-state object; progress is still on stderr.
+    assert!(
+        serde_json::from_str::<Value>(out.stdout.trim()).is_err(),
+        "ndjson stdout is a stream of lines, not one final-state object"
+    );
+    assert!(
+        out.stderr.contains("run:") && out.stderr.contains("task:"),
+        "progress on stderr"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn format_pretty_writes_nothing_to_stdout_and_progress_to_stderr() {
+    // O1/O4: `--format pretty` keeps the human summary on stderr and writes NOTHING to stdout — a
+    // reviewer diffing the three formats sees an empty pretty stdout confined against the json object.
+    let dir = temp_dir("fmt-pretty");
+    let flow = write(&dir, "flow.yaml", PASSING_YAML);
+    let out = run_flow_args(&flow, &["--format", "pretty"], &[]);
+
+    assert_eq!(
+        out.code,
+        Some(0),
+        "the pretty run exits 0; stderr: {}",
+        out.stderr
+    );
+    assert!(
+        out.stdout.trim().is_empty(),
+        "pretty writes nothing to stdout, got {:?}",
+        out.stdout
+    );
+    assert!(
+        out.stderr.contains("run:") && out.stderr.contains("task:"),
+        "the human summary is on stderr, got {:?}",
+        out.stderr
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn format_json_stdout_is_the_final_state_object_matching_the_pipe_default() {
+    // O1/regression: `--format json` renders the final Pipeline state as one object on stdout — the
+    // identical machine-data contract the pipe default (no flag) already yields.
+    let dir = temp_dir("fmt-json");
+    let flow = write(&dir, "flow.yaml", PASSING_YAML);
+    let explicit = run_flow_args(&flow, &["--format", "json"], &[]);
+    let default = run_flow(&flow, &[]);
+
+    assert_eq!(
+        explicit.code,
+        Some(0),
+        "the json run exits 0; stderr: {}",
+        explicit.stderr
+    );
+    let a: Value = serde_json::from_str(explicit.stdout.trim())
+        .unwrap_or_else(|e| panic!("json stdout is one object: {e}"));
+    let b: Value = serde_json::from_str(default.stdout.trim())
+        .unwrap_or_else(|e| panic!("the pipe default stdout is one object: {e}"));
+    assert_eq!(
+        a, b,
+        "explicit --format json equals the pipe default final-state object"
+    );
+    assert_eq!(
+        a["build"]["message"], "built-ok",
+        "the final state carries the merged output"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_secret_is_redacted_under_every_format() {
+    // O2/O4: a task echoes a requested secret; the raw value appears in NO stream under any format —
+    // the ndjson event stream, the json final state, and the pretty stderr summary are all masked.
+    const SECRET_YAML: &str = "name: demo\ncontext:\n  secrets:\n    TOKEN:\n      env: TMX_TEST_TOKEN\ntasks:\n  - name: leak\n    type: exec\n    secrets: [TOKEN]\n    with:\n      command: \"printf %s '${{ secrets.TOKEN }}'\"\n";
+    let dir = temp_dir("fmt-secret");
+    let flow = write(&dir, "flow.yaml", SECRET_YAML);
+    let raw = "supersecretvalueacrossformats";
+
+    for format in ["pretty", "json", "ndjson"] {
+        let out = run_flow_args(&flow, &["--format", format], &[("TMX_TEST_TOKEN", raw)]);
+        assert_eq!(
+            out.code,
+            Some(0),
+            "the {format} secret run exits 0; stderr: {}",
+            out.stderr
+        );
+        assert!(
+            !out.stdout.contains(raw),
+            "the raw secret must not appear on stdout under --format {format}, got {:?}",
+            out.stdout
+        );
+        assert!(
+            !out.stderr.contains(raw),
+            "the raw secret must not appear on stderr under --format {format}, got {:?}",
+            out.stderr
+        );
+    }
 
     std::fs::remove_dir_all(&dir).ok();
 }

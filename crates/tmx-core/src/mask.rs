@@ -40,6 +40,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::Value;
 use tmx_schema::limits::MASK_SCAN_LEN_MIN_BYTES;
 
+use crate::error::RunError;
+use crate::model::Event;
+
 /// The token substituted for every redacted occurrence of a sensitive value.
 ///
 /// A fixed marker (not a numeric bound, so it lives here rather than in `tmx-schema::limits`); it is
@@ -80,6 +83,18 @@ impl<T> Masked<T> {
     #[must_use]
     pub fn origin(&self) -> u64 {
         self.origin
+    }
+
+    /// A payload deliberately **not** routed through any [`Masker`] (origin `0`), for the
+    /// boundary-assertion negative-space tests only — an output port that asserts routing must reject
+    /// it. A real Masker never mints origin `0` ([`Masker::new`] starts the id counter at 1), so this
+    /// is unreachable in production; it exists solely so a test in another crate can construct the
+    /// bypass an output port's assertion must catch (the negative space of "a sink cannot skip the
+    /// Masker").
+    #[doc(hidden)]
+    #[must_use]
+    pub fn unrouted_for_test(value: T) -> Self {
+        Self { value, origin: 0 }
     }
 }
 
@@ -207,6 +222,20 @@ impl Masker {
         }
     }
 
+    /// Redact a JSON value and seal it as an **owned** [`Masked<Value>`] — the final-state counterpart
+    /// of [`redact_value`](Self::redact_value), for an output port (the final-state reporter, the run
+    /// store) that needs to own the redacted object rather than borrow a subtree. Same scrubbing as
+    /// [`redact_value`]; it just materialises the [`Cow`] so the token owns its `Value`.
+    #[must_use]
+    pub fn redact_state(&self, value: &Value) -> Masked<Value> {
+        let masked = self.redact_value(value);
+        let origin = masked.origin();
+        Masked {
+            value: masked.into_inner().into_owned(),
+            origin,
+        }
+    }
+
     /// Redact a plain (non-JSON) line — a log line — returning a [`Masked`] payload.
     ///
     /// A line with no secret is borrowed unchanged.
@@ -225,6 +254,57 @@ impl Masker {
             value: scrubbed,
             origin: self.id,
         }
+    }
+
+    /// Redact an [`Event`]'s leaked-secret surface and seal it as a [`Masked<Event>`] an output port
+    /// may emit — the event-shaped counterpart of [`redact_value`](Self::redact_value).
+    ///
+    /// Only two variants carry a free-form, secret-bearing field: `task.finish` (the masked task
+    /// output) and `task.error` (the failure message an adapter could have echoed a secret into).
+    /// Every other variant carries only structural fields (names, ids, statuses, durations) and passes
+    /// through unchanged — but still sealed with this Masker's origin, so **every** event a sink
+    /// receives is a proven-routed [`Masked`] payload (08 §Masking at the boundary). The sink asserts
+    /// that origin, so a new sink cannot emit an event that skipped the Masker.
+    #[must_use]
+    pub fn redact_event(&self, event: &Event) -> Masked<Event> {
+        let redacted = match event {
+            Event::TaskFinish {
+                name,
+                status,
+                ms,
+                output,
+            } => Event::TaskFinish {
+                name: name.clone(),
+                status: *status,
+                ms: *ms,
+                output: output
+                    .as_ref()
+                    .map(|value| self.redact_value(value).into_inner().into_owned()),
+            },
+            Event::TaskError { name, error } => Event::TaskError {
+                name: name.clone(),
+                error: self.redact_error(error),
+            },
+            other => other.clone(),
+        };
+        // Postcondition: the sealed event carries this Masker's non-zero identity (the sink's proof).
+        assert_ne!(
+            self.id, 0,
+            "masker id must be initialised before minting a token"
+        );
+        Masked {
+            value: redacted,
+            origin: self.id,
+        }
+    }
+
+    /// Redact a [`RunError`]'s human message (an adapter could echo a secret into it); the stable
+    /// `code` and `category` are secret-free and left intact.
+    #[must_use]
+    pub fn redact_error(&self, error: &RunError) -> RunError {
+        let mut redacted = error.clone();
+        redacted.message = self.redact_line(&error.message).into_inner().into_owned();
+        redacted
     }
 
     /// Assert the registry is populated with every resolved secret before any output port runs.
@@ -575,6 +655,64 @@ mod tests {
         let b = Masker::new();
         assert_ne!(a.id(), b.id(), "each masker gets a distinct id");
         assert_ne!(a.id(), 0, "and a non-zero id");
+    }
+
+    #[test]
+    fn redact_event_scrubs_the_secret_bearing_variants_and_seals_the_rest() {
+        use crate::model::{Milliseconds, TaskStatus};
+
+        let secret = "sk-event-secret-123";
+        let masker = masker_with(secret);
+
+        // `task.finish` output is redacted, and the sealed event carries this Masker's origin.
+        let finish = masker.redact_event(&Event::TaskFinish {
+            name: "leak".to_string(),
+            status: TaskStatus::Ok,
+            ms: Milliseconds(3),
+            output: Some(json!({ "message": format!("saw {secret}") })),
+        });
+        assert_eq!(
+            finish.origin(),
+            masker.id(),
+            "the event is sealed by this masker"
+        );
+        let text = serde_json::to_string(finish.get()).expect("serialises");
+        assert!(
+            !text.contains(secret) && text.contains(REDACTED_PLACEHOLDER),
+            "the task.finish output is redacted: {text}"
+        );
+
+        // `task.error` message is redacted too.
+        let errored = masker.redact_event(&Event::TaskError {
+            name: "leak".to_string(),
+            error: RunError::run_failure("boom", format!("failed with {secret}")),
+        });
+        let text = serde_json::to_string(errored.get()).expect("serialises");
+        assert!(
+            !text.contains(secret),
+            "the task.error message is redacted: {text}"
+        );
+
+        // A structural variant with no secret-bearing field is still sealed (origin set), so every
+        // event a sink sees is a proven-routed payload.
+        let start = masker.redact_event(&Event::TaskStart {
+            name: "leak".to_string(),
+        });
+        assert_eq!(
+            start.origin(),
+            masker.id(),
+            "even a structural event is sealed with the masker's origin"
+        );
+    }
+
+    #[test]
+    fn an_unrouted_payload_has_origin_zero() {
+        // Negative space: the forge seam models a payload that skipped the Masker — an output port's
+        // routing assertion must be able to catch it, so its origin is the never-minted zero.
+        let forged = Masked::unrouted_for_test(json!("payload"));
+        assert_eq!(forged.origin(), 0, "an unrouted payload carries origin 0");
+        let real = masker_with("sk-real-secret").redact_state(&json!("x"));
+        assert_ne!(real.origin(), 0, "a real masked payload never has origin 0");
     }
 
     #[test]

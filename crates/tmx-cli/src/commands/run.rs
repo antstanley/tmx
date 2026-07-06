@@ -8,9 +8,11 @@
 //! through the [`PipelineRunner`]. Either way the final Pipeline state comes back masked, and `main`
 //! renders it to stdout and maps the outcome to an exit code.
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use tmx_adapters::loader::detect_source_kind;
+use tmx_adapters::sink::{FinalStateSink, Format};
 
 use tmx_core::ports::driven::{IdGenerator, ProviderMethod};
 use tmx_core::ports::driving::{RunFlow, RunOptions};
@@ -53,7 +55,16 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
     })?;
     let resolved = resolve_target(&args, &cwd, config::env_flow())?;
 
-    let composed = Composed::new(resolved.base_dir.clone())?;
+    // Resolve the reporter surface: the stdout format (flag → TMX_FORMAT → TTY default) and whether
+    // the stderr progress is coloured. The stdout TTY check drives pretty-vs-json; the stderr TTY
+    // check drives colour. Both are resolved once, here, and threaded into the composed reporter.
+    let format = config::resolve_format(
+        args.format.map(crate::args::FormatArg::to_format),
+        std::io::stdout().is_terminal(),
+    );
+    let color = config::resolve_color(args.color, args.no_color, std::io::stderr().is_terminal());
+
+    let composed = Composed::new(resolved.base_dir.clone(), format, color)?;
     let preflighted = preflight(
         &resolved.target,
         composed.preflight_ports(),
@@ -123,7 +134,34 @@ pub async fn execute(args: RunArgs) -> Result<RunRecord, RunError> {
         eprintln!("tmx: warning: provider clean failed: {}", clean_err.message);
     }
 
+    // Render the stdout machine data for the selected format. `ndjson` already streamed every event to
+    // stdout during the run (via the composed reporter), and `pretty` writes nothing to stdout (the
+    // human reads the stderr progress); only `json` renders the final Pipeline state here, at run end.
+    if let Ok(record) = &record {
+        emit_final_state(record, format)?;
+    }
     record
+}
+
+/// Render the machine-data stdout for the resolved `format` at run end: under `json`, the merged final
+/// Pipeline state as one masked JSON object (07 §stdout / stderr contract); under `ndjson`/`pretty`,
+/// nothing (the event stream / stderr progress already carried the run).
+///
+/// The state on the [`RunRecord`] is **already redacted** by the run's Masker inside the core (the use
+/// case / preflighted path both mask it before it leaves the engine, 04 §Secrets & masking). Re-sealing
+/// it through a fresh Masker here mints the [`Masked`](tmx_core::Masked) typestate the
+/// [`FinalStateSink`] requires — the boundary proof that no *raw* state object can reach stdout — so
+/// the sink's routing assertion holds without the run's Masker having to escape the core.
+fn emit_final_state(record: &RunRecord, format: Format) -> Result<(), RunError> {
+    if format != Format::Json {
+        return Ok(());
+    }
+    let state = record
+        .final_state
+        .as_ref()
+        .map_or_else(|| serde_json::json!({}), |s| s.as_value().clone());
+    let masked = Masker::new().redact_state(&state);
+    FinalStateSink::new().emit(&masked)
 }
 
 /// Execute an already-preflighted, assembled [`ResolvedFlow`] directly through the runner, returning

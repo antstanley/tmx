@@ -47,7 +47,13 @@ pub async fn execute(args: crate::args::EnvArgs) -> Result<Value, RunError> {
     };
     let resolved = resolve_target(&run_args, &cwd, config::env_flow())?;
 
-    let composed = Composed::new(resolved.base_dir.clone())?;
+    // `tmx env` drives the provider lifecycle, not the pipeline, so no run events stream; the reporter
+    // is unused. Compose it with the machine-data default (json, no colour).
+    let composed = Composed::new(
+        resolved.base_dir.clone(),
+        tmx_adapters::sink::Format::Json,
+        false,
+    )?;
     let preflighted = preflight(
         &resolved.target,
         composed.preflight_ports(),

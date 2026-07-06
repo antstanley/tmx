@@ -196,7 +196,7 @@ mod tests {
 
     #[async_trait]
     impl EventSink for OkFake {
-        async fn emit(&self, event: &Event) -> Result<(), RunError> {
+        async fn emit(&self, event: &crate::mask::Masked<Event>) -> Result<(), RunError> {
             let _ = event;
             Ok(())
         }
@@ -608,11 +608,12 @@ mod tests {
         );
 
         let sink: Box<dyn EventSink> = Box::new(OkFake);
-        let event = Event::RunStart {
+        let masker = crate::mask::Masker::new();
+        let masked = masker.redact_event(&Event::RunStart {
             id,
             flow: "deploy".to_string(),
-        };
-        block_on_ready(sink.emit(&event)).expect("the sink accepts an Event");
+        });
+        block_on_ready(sink.emit(&masked)).expect("the sink accepts a Masked<Event>");
         assert_eq!(
             block_on_ready(store.prune(&Timestamp::new("2026-07-05T00:00:00Z")))
                 .expect("prune runs"),

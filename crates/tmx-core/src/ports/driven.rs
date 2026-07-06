@@ -490,11 +490,18 @@ pub trait RunStore: Send + Sync {
 }
 
 /// Receives the domain [`Event`](crate::model::Event) stream — the `EventSink` port (reporters).
+///
+/// The payload is a [`Masked<Event>`](crate::mask::Masked): a proven-routed event the runner sealed
+/// through the run's [`Masker`](crate::mask::Masker) before emission (08 §Masking at the boundary).
+/// Accepting the `Masked` typestate — never a raw `Event` — is what makes it *structurally*
+/// impossible for a sink to emit an event that skipped the Masker; each sink additionally asserts the
+/// payload's non-zero origin as the paired runtime boundary check.
 #[must_use = "an EventSink is a port handle; dropping it discards a wired capability"]
 #[async_trait]
 pub trait EventSink: Send + Sync {
-    /// Emit one masked [`Event`](crate::model::Event). A write failure is a typed [`RunError`].
-    async fn emit(&self, event: &crate::model::Event) -> Result<(), RunError>;
+    /// Emit one masked [`Event`](crate::model::Event), routed through the Masker. A write failure is a
+    /// typed [`RunError`].
+    async fn emit(&self, event: &crate::mask::Masked<crate::model::Event>) -> Result<(), RunError>;
 }
 
 /// The wall-clock and duration source — the `Clock` port (the determinism seam).
