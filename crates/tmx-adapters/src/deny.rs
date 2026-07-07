@@ -54,7 +54,11 @@ pub struct DenyingObjectStore;
 
 #[async_trait::async_trait]
 impl ObjectStore for DenyingObjectStore {
-    async fn op(&self, _op: StoreOp) -> Result<StoreResult, RunError> {
+    async fn op(
+        &self,
+        _op: StoreOp,
+        _timeout: Option<tmx_core::model::Milliseconds>,
+    ) -> Result<StoreResult, RunError> {
         Err(unavailable("ObjectStore", "store"))
     }
 }
@@ -116,9 +120,12 @@ mod tests {
         .expect_err("the file stub denies");
         assert_eq!(file.code, "capability_unavailable", "file denies too");
 
-        let store = block_on_ready(DenyingObjectStore.op(StoreOp::Head {
-            key: "k".to_string(),
-        }))
+        let store = block_on_ready(DenyingObjectStore.op(
+            StoreOp::Head {
+                key: "k".to_string(),
+            },
+            None,
+        ))
         .expect_err("the store stub denies");
         assert_eq!(store.task.as_deref(), Some("store"), "store names its type");
 
@@ -127,6 +134,8 @@ mod tests {
             messages: Vec::new(),
             temperature: None,
             max_tokens: None,
+            api_url: None,
+            api_key: None,
         }))
         .expect_err("the chat stub denies");
         assert_eq!(

@@ -399,9 +399,12 @@ mod tests {
             .with_object("b/2", b"two".to_vec())
             .with_object("a/1", b"one".to_vec())
             .with_object("b/1", b"three".to_vec());
-        let listed = block_on_ready(store.op(StoreOp::List {
-            prefix: "b/".to_string(),
-        }))
+        let listed = block_on_ready(store.op(
+            StoreOp::List {
+                prefix: "b/".to_string(),
+            },
+            None,
+        ))
         .expect("list succeeds");
         assert_eq!(
             listed,
@@ -412,9 +415,12 @@ mod tests {
         );
 
         // Negative space: getting an absent key is a typed error.
-        let missing = block_on_ready(store.op(StoreOp::Get {
-            key: "missing".to_string(),
-        }))
+        let missing = block_on_ready(store.op(
+            StoreOp::Get {
+                key: "missing".to_string(),
+            },
+            None,
+        ))
         .expect_err("a missing object is an error");
         assert_eq!(
             missing.code, "object_not_found",

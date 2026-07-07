@@ -28,6 +28,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 
 use tmx_core::error::RunError;
+use tmx_core::model::Milliseconds;
 use tmx_core::ports::driven::{ObjectStore, StoreOp, StoreResult};
 use tmx_schema::limits::CAPTURED_OUTPUT_MAX_BYTES;
 
@@ -206,11 +207,19 @@ impl S3ObjectStore {
     }
 
     /// Perform one object-store operation, returning a [`StoreResult`] or a typed [`S3Error`].
-    async fn perform(&self, op: StoreOp) -> Result<StoreResult, S3Error> {
+    ///
+    /// `timeout`, when set, bounds every request the op issues (the per-task `timeout` from the
+    /// `store` task) — a breach surfaces as a [`S3Error::Transport`] whose `is_timeout()` maps to a
+    /// typed `task_timeout` at the port boundary, the same contract `fetch`/`exec`/`run` honour.
+    async fn perform(
+        &self,
+        op: StoreOp,
+        timeout: Option<Milliseconds>,
+    ) -> Result<StoreResult, S3Error> {
         match op {
             StoreOp::Get { key } => {
                 let response = self
-                    .signed_request(reqwest::Method::GET, &key, "", &[])
+                    .signed_request(reqwest::Method::GET, &key, "", &[], timeout)
                     .await?;
                 let status = response.status().as_u16();
                 if status == 404 {
@@ -222,14 +231,14 @@ impl S3ObjectStore {
             }
             StoreOp::Put { key, body } => {
                 let response = self
-                    .signed_request(reqwest::Method::PUT, &key, "", &body)
+                    .signed_request(reqwest::Method::PUT, &key, "", &body, timeout)
                     .await?;
                 let _ = ok_or_http(response, &key)?;
                 Ok(StoreResult::Done)
             }
             StoreOp::Delete { key } => {
                 let response = self
-                    .signed_request(reqwest::Method::DELETE, &key, "", &[])
+                    .signed_request(reqwest::Method::DELETE, &key, "", &[], timeout)
                     .await?;
                 // S3 delete is idempotent: a 204 (deleted) and a 404 (already absent) are both success.
                 let status = response.status().as_u16();
@@ -240,7 +249,7 @@ impl S3ObjectStore {
             }
             StoreOp::Head { key } => {
                 let response = self
-                    .signed_request(reqwest::Method::HEAD, &key, "", &[])
+                    .signed_request(reqwest::Method::HEAD, &key, "", &[], timeout)
                     .await?;
                 let status = response.status().as_u16();
                 if status == 404 {
@@ -268,7 +277,7 @@ impl S3ObjectStore {
                     format!("list-type=2&prefix={}", uri_encode(&prefix, true))
                 };
                 let response = self
-                    .signed_request(reqwest::Method::GET, "", &query, &[])
+                    .signed_request(reqwest::Method::GET, "", &query, &[], timeout)
                     .await?;
                 let response = ok_or_http(response, "")?;
                 let body = self.read_capped(response).await?;
@@ -280,13 +289,15 @@ impl S3ObjectStore {
         }
     }
 
-    /// Build, sign (SigV4), and send one request for `key` with `query` and `body`.
+    /// Build, sign (SigV4), and send one request for `key` with `query` and `body`, bounded by
+    /// `timeout` when set (the per-task `store` timeout).
     async fn signed_request(
         &self,
         method: reqwest::Method,
         key: &str,
         query: &str,
         body: &[u8],
+        timeout: Option<Milliseconds>,
     ) -> Result<reqwest::Response, S3Error> {
         let base = self.endpoint_base();
         // The canonical path is `/{bucket}` for a bucket-level op (list) and `/{bucket}/{key}` for an
@@ -359,6 +370,11 @@ impl S3ObjectStore {
         if !body.is_empty() {
             builder = builder.body(body.to_vec());
         }
+        // Apply the per-task timeout as a wall-clock request bound; a breach is a `reqwest` timeout
+        // error whose `is_timeout()` maps to a typed `task_timeout` at the port boundary.
+        if let Some(Milliseconds(ms)) = timeout {
+            builder = builder.timeout(Duration::from_millis(ms));
+        }
         builder.send().await.map_err(S3Error::Transport)
     }
 
@@ -381,8 +397,12 @@ impl S3ObjectStore {
 
 #[async_trait]
 impl ObjectStore for S3ObjectStore {
-    async fn op(&self, op: StoreOp) -> Result<StoreResult, RunError> {
-        self.perform(op).await.map_err(RunError::from)
+    async fn op(
+        &self,
+        op: StoreOp,
+        timeout: Option<Milliseconds>,
+    ) -> Result<StoreResult, RunError> {
+        self.perform(op, timeout).await.map_err(RunError::from)
     }
 }
 
@@ -913,6 +933,91 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------------------------
+    // Per-task timeout — a `store` op honours its `timeout` under the cancellation contract, the
+    // same as `exec`/`run`/`fetch`: a breach is a typed `task_timeout`, at ~the timeout.
+    // -----------------------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_store_op_against_a_silent_endpoint_times_out_typed_at_its_timeout() {
+        use std::net::TcpListener;
+        use std::time::Instant;
+
+        // A server that accepts the connection but never replies, so the request hangs until the
+        // per-op timeout fires (rather than the server's long hold).
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local listener");
+        let addr = listener.local_addr().expect("the listener has an address");
+        std::thread::spawn(move || {
+            if let Some(Ok(stream)) = listener.incoming().next() {
+                std::thread::sleep(Duration::from_secs(5));
+                drop(stream);
+            }
+        });
+
+        let store = S3ObjectStore::new(S3Config {
+            endpoint: format!("http://{addr}"),
+            region: "us-east-1".to_string(),
+            bucket: "bucket".to_string(),
+            credentials: creds(),
+        })
+        .expect("the client builds");
+
+        let timeout_ms = 200;
+        let started = Instant::now();
+        let error = store
+            .op(
+                StoreOp::Get {
+                    key: "slow/object".to_string(),
+                },
+                Some(Milliseconds(timeout_ms)),
+            )
+            .await
+            .expect_err("a silent endpoint must time out, not hang");
+        let elapsed = started.elapsed();
+
+        assert_eq!(
+            error.code, "task_timeout",
+            "a per-op timeout breach is the same typed code as exec/run/fetch"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the op returns at ~its {timeout_ms}ms timeout, not after the server's 5s hold: {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_store_op_with_no_timeout_is_not_bounded_by_a_request_timeout() {
+        // Negative-space companion: with `timeout: None` no request timeout is applied — the op
+        // fails only on the transport error it actually hits (connection refused here), never a
+        // spurious `task_timeout`. Proves the timeout is opt-in, threaded from the task.
+        let store = S3ObjectStore::new(S3Config {
+            // Port 1 is unbound, so the connect is refused immediately (a fast, deterministic error).
+            endpoint: "http://127.0.0.1:1".to_string(),
+            region: "us-east-1".to_string(),
+            bucket: "bucket".to_string(),
+            credentials: creds(),
+        })
+        .expect("the client builds");
+
+        let error = store
+            .op(
+                StoreOp::Get {
+                    key: "k".to_string(),
+                },
+                None,
+            )
+            .await
+            .expect_err("a refused connection is an error, not a hang");
+        assert_ne!(
+            error.code, "task_timeout",
+            "with no timeout set, a transport error is not reported as a timeout"
+        );
+        assert_eq!(
+            error.code, "store_request_failed",
+            "a connection failure with no timeout is a plain request failure"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Reviewable integration flow — requires a local S3-compatible endpoint (MinIO/LocalStack).
     // Run with: TMX_STORE_BUCKET=<bucket> AWS_ENDPOINT_URL=http://localhost:9000 \
     //   AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_REGION=us-east-1 \
@@ -928,17 +1033,20 @@ mod tests {
 
         // put
         let put = store
-            .op(StoreOp::Put {
-                key: key.clone(),
-                body: body.clone(),
-            })
+            .op(
+                StoreOp::Put {
+                    key: key.clone(),
+                    body: body.clone(),
+                },
+                None,
+            )
             .await
             .expect("put succeeds");
         assert_eq!(put, StoreResult::Done, "put reports Done");
 
         // head — exists with the right size
         let head = store
-            .op(StoreOp::Head { key: key.clone() })
+            .op(StoreOp::Head { key: key.clone() }, None)
             .await
             .expect("head succeeds");
         assert_eq!(
@@ -952,7 +1060,7 @@ mod tests {
 
         // get — the bytes round-trip
         let got = store
-            .op(StoreOp::Get { key: key.clone() })
+            .op(StoreOp::Get { key: key.clone() }, None)
             .await
             .expect("get succeeds");
         assert_eq!(
@@ -963,9 +1071,12 @@ mod tests {
 
         // list — the key is present under its prefix
         let list = store
-            .op(StoreOp::List {
-                prefix: "tmx-it/".to_string(),
-            })
+            .op(
+                StoreOp::List {
+                    prefix: "tmx-it/".to_string(),
+                },
+                None,
+            )
             .await
             .expect("list succeeds");
         match list {
@@ -980,11 +1091,11 @@ mod tests {
 
         // delete — then head shows it gone
         store
-            .op(StoreOp::Delete { key: key.clone() })
+            .op(StoreOp::Delete { key: key.clone() }, None)
             .await
             .expect("delete succeeds");
         let gone = store
-            .op(StoreOp::Head { key: key.clone() })
+            .op(StoreOp::Head { key: key.clone() }, None)
             .await
             .expect("head after delete succeeds");
         assert_eq!(
@@ -1002,9 +1113,12 @@ mod tests {
     async fn get_of_a_missing_key_is_object_not_found() {
         let store = S3ObjectStore::from_env().expect("the client builds");
         let error = store
-            .op(StoreOp::Get {
-                key: format!("tmx-it/definitely-absent-{}", std::process::id()),
-            })
+            .op(
+                StoreOp::Get {
+                    key: format!("tmx-it/definitely-absent-{}", std::process::id()),
+                },
+                None,
+            )
             .await
             .expect_err("a missing key is an error, not a panic");
         assert_eq!(

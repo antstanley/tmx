@@ -229,6 +229,9 @@ pub struct StoreWith {
     /// Access credentials; an open object whose values typically reference secrets.
     #[serde(default)]
     pub credentials: Option<Value>,
+    /// Per-operation timeout, enforced by the adapter under the cancellation contract.
+    #[serde(default)]
+    pub timeout: Option<Duration>,
 }
 
 /// The `chatCompletionWith` `$def`: an LLM ChatCompletions call. `additionalProperties: true`;

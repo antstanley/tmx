@@ -1,6 +1,6 @@
 # Plan: Conformance gap-closure (TMX runtime)
 
-**Status:** Accepted · **Layout:** kanban · **Date:** 2026-07-07 · **Owner:** Ant Stanley · **Source:** the R2 spec-conformance review of the `tmx-runtime` build against [`.specs/`](../../00-overview.md)
+**Status:** Done · **Layout:** kanban · **Date:** 2026-07-07 · **Owner:** Ant Stanley · **Source:** the R2 spec-conformance review of the `tmx-runtime` build against [`.specs/`](../../00-overview.md)
 
 Close the **code** divergences the R2 conformance review found (spec is right, code is missing/incorrect). Spec-only drift (stale module trees, "no Rust code exists yet", etc.) is handled separately by a spec-doc refresh, not here. Items that are spec over-reach (the `tmx flow run` noun-group, raising the state-size cap above its hard ceiling, the relaxed newer-spec-version warning) are routed to the doc pass as spec trims, not implemented here.
 

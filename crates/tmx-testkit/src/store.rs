@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
+use tmx_core::Milliseconds;
 use tmx_core::ports::driven::{ObjectStore, RunStore, StoreOp, StoreResult};
 use tmx_core::{Event, RunError, RunId, RunRecord, Timestamp};
 
@@ -52,7 +53,13 @@ fn lock_poisoned(what: &'static str) -> RunError {
 
 #[async_trait::async_trait]
 impl ObjectStore for MemObjectStore {
-    async fn op(&self, op: StoreOp) -> Result<StoreResult, RunError> {
+    // The in-memory store is instantaneous, so the per-op `timeout` is accepted (the port contract)
+    // and never breached; the real S3 adapter is where a slow endpoint surfaces `task_timeout`.
+    async fn op(
+        &self,
+        op: StoreOp,
+        _timeout: Option<Milliseconds>,
+    ) -> Result<StoreResult, RunError> {
         let mut objects = self
             .objects
             .lock()

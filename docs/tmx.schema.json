@@ -266,6 +266,7 @@
         "region": { "type": "string" },
         "content": { "type": "string", "description": "Object body for put operations." },
         "contentType": { "type": "string" },
+        "timeout": { "$ref": "#/$defs/duration" },
         "credentials": {
           "type": "object",
           "description": "Access credentials. Values typically reference secrets from the context.",

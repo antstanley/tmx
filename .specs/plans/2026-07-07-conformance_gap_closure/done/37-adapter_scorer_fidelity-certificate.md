@@ -1,0 +1,24 @@
+# Done Certificate — Task 37: Adapter/scorer fidelity
+
+**Task:** [37-adapter_scorer_fidelity.md](37-adapter_scorer_fidelity.md) · **Plan:** [plan.md](../plan.md)
+**State:** Validated 2026-07-07
+
+> Discharge each obligation with run/observed evidence; do not record DONE with any non-SATISFIED obligation.
+
+## Obligations
+
+- **O1 — store timeout.** A `store` task honours its per-task `timeout`, surfacing typed `task_timeout` on breach under the same cancellation contract as `exec`/`run`/`fetch`.
+  - *Evidence:* a test + a real `tmx run` where a `store` task against a slow/unreachable endpoint times out typed at ~its timeout.
+  - *Status:* ☒ SATISFIED — the fix (add `"timeout": { "$ref": "#/$defs/duration" }` to `storeWith.properties` in `docs/tmx.schema.json`, mirroring exec/run/fetch) closes the sole end-to-end gap. Verified independently: (a) unit — `a_store_op_against_a_silent_endpoint_times_out_typed_at_its_timeout` fires at ~its timeout with `error.code == "task_timeout"`, negative-space `a_store_op_with_no_timeout_is_not_bounded_by_a_request_timeout` shows `timeout: None` → `store_request_failed` (no spurious timeout); (b) schema — `tmx validate` on a store flow carrying `timeout: 200ms` now returns `all artifacts valid` (exit 0), while a bogus `storeWith` field is still rejected (`additionalProperties:false` intact); (c) real run — `tmx run --features store` of a `store get` with `timeout: 300ms` against a hanging endpoint failed at ~304ms with the run record's `error.code == "task_timeout"`. Dispatch threads `sw.timeout` via `duration_to_ms` (dispatch.rs:106) into `ObjectStore::op`; the adapter applies reqwest `.timeout()` and `From<S3Error>` maps `is_timeout()` → `task_timeout`.
+- **O2 — llmRubric endpoint.** The `llmRubric` scorer's `apiUrl`/`apiKey` route the judge call to the configured endpoint; absent them, the composed default is used.
+  - *Evidence:* an `apiUrl` pointed at a local server is observed to receive the judge request; the absent-field case still uses the default.
+  - *Status:* ☒ SATISFIED — `fanout.rs` interpolates the scorer's `apiUrl`/`apiKey` onto the judge `ChatRequest`; the chat adapter routes/authenticates to the per-request endpoint (empty override treated as unset). Proven at three layers: eval `an_llm_rubric_scorer_routes_its_apiurl_and_interpolated_apikey_to_the_judge` (apiUrl routes, apiKey interpolated from inputs), negative-space `an_llm_rubric_scorer_without_apiurl_leaves_the_composed_default` (both None), adapter `a_per_request_apiurl_and_apikey_override_the_composed_default` (routes + bearer auth even over an empty default endpoint, captured server-side). The scorer schema already declares `apiUrl`/`apiKey` (verified in `docs/tmx.schema.json` `$defs.scorer.properties`), so O2 is reviewable end-to-end via a real run — no schema gap.
+- **O3 — no regression.** Existing store/chat/eval tests stay green; `cargo fmt --all --check` / `clippy --all-targets --all-features -D warnings` / `nextest` (all prior + new) / `scripts/purity.sh` clean; no new hard-coded bound.
+  - *Status:* ☒ SATISFIED — independently re-ran from the repo root at validation: `cargo fmt --all --check` clean; `cargo clippy --all-targets --all-features -- -D warnings` clean (no warnings); `cargo nextest run --all-features` = 497 passed, 2 skipped (the pre-existing #[ignore] live-S3 tests); `scripts/purity.sh` clean; `scripts/validate.sh` (schema changed) all checks passed. No new hard-coded bound (reuses `Duration` + the existing `duration_to_ms`, same as exec/run/fetch).
+- **O4 — Reviewable** exercised on the real binary per the task's Reviewable line.
+  - *Status:* ☒ SATISFIED — both halves exercised on the real binary. Store-timeout: `tmx run` (built `--features store`) of a store flow with `timeout: 300ms` against a silent/slow endpoint failed at ~304ms with `runs show` reporting `error.code == "task_timeout"`. llmRubric: the scorer schema carries `apiUrl`/`apiKey` and the eval+adapter integration tests observe the per-request endpoint/key server-side (routes + bearer auth), with the absent-field case falling back to the composed default.
+
+## Conclusion
+VERDICT: DONE
+CONFIDENCE: high
+SUMMARY: All four obligations SATISFIED. The schema fix (add `timeout` to `storeWith`, mirroring exec/run/fetch's `$defs/duration` ref) closed the sole prior gap: a store flow with `timeout` now passes preflight and, on a real `tmx run --features store` against a hanging endpoint, surfaces the typed `error.code == "task_timeout"` at ~its 300ms bound (observed ~304ms), while a bogus `storeWith` field is still rejected. O2 llmRubric apiUrl/apiKey routing is wired and proven at eval+adapter with negative space. Gates all green at validation: fmt / clippy -D warnings / nextest (497 passed, 2 pre-existing skips) / purity.sh / validate.sh. No new hard-coded bound.

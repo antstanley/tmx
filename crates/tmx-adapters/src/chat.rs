@@ -114,9 +114,20 @@ impl ChatCompletionsModel {
     /// bounded chunks (rejected the moment it exceeds the cap), maps a non-2xx status to a typed API
     /// error carrying a bounded body slice, and parses `choices[0].message.content` into the response.
     async fn complete_inner(&self, request: ChatRequest) -> Result<ChatResponse, ChatError> {
-        if self.endpoint.is_empty() {
+        // A per-request `apiUrl`/`apiKey` (from a `chat-completion` task or an `llmRubric` scorer)
+        // overrides the composed default; absent, the adapter's own endpoint/key is used. An empty
+        // override string is treated as "not set" so it never blanks out the default.
+        let endpoint = match request.api_url.as_deref() {
+            Some(url) if !url.is_empty() => url,
+            _ => &self.endpoint,
+        };
+        if endpoint.is_empty() {
             return Err(ChatError::NoEndpoint);
         }
+        let api_key = match request.api_key.as_deref() {
+            Some(key) if !key.is_empty() => Some(key),
+            _ => self.api_key.as_deref(),
+        };
 
         // Serialise the OpenAI-shaped body by hand and set the JSON content type — `reqwest`'s `.json()`
         // helper needs its `json` feature, which this crate deliberately does not enable, so the body
@@ -128,10 +139,10 @@ impl ChatCompletionsModel {
         })?;
         let mut builder = self
             .client
-            .post(&self.endpoint)
+            .post(endpoint)
             .header("content-type", "application/json")
             .body(body);
-        if let Some(key) = &self.api_key {
+        if let Some(key) = api_key {
             builder = builder.bearer_auth(key);
         }
 
@@ -369,6 +380,8 @@ mod tests {
             }],
             temperature: Some(0.2),
             max_tokens: Some(64),
+            api_url: None,
+            api_key: None,
         }
     }
 
@@ -512,6 +525,38 @@ mod tests {
         assert!(
             sent_body.contains("\"model\":\"gpt-x\""),
             "the request model reached the server: {sent_body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_per_request_apiurl_and_apikey_override_the_composed_default() {
+        // O2 at the adapter: a request carrying `api_url`/`api_key` routes to that endpoint with that
+        // bearer key — even when the adapter's own default endpoint is empty (which would otherwise be
+        // `chat_no_endpoint`). Proves the override both routes and authenticates.
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let reply =
+            br#"{"model":"gpt-x","choices":[{"message":{"role":"assistant","content":"ok"}}]}"#;
+        let url = spawn_once("200 OK", reply, std::sync::Arc::clone(&captured));
+
+        // No default endpoint and no default key — the per-request override must supply both.
+        let model = ChatCompletionsModel::new(String::new(), None).expect("the client builds");
+        let mut request = request("gpt-x", "hi");
+        request.api_url = Some(url);
+        request.api_key = Some("override-key".to_string());
+
+        let response = model
+            .complete(request)
+            .await
+            .expect("the per-request endpoint is used, not the empty default");
+        assert_eq!(
+            response.content, "ok",
+            "the override endpoint served the reply"
+        );
+
+        let (_body, authorization) = captured.lock().unwrap().clone().expect("a request arrived");
+        assert_eq!(
+            authorization, "Bearer override-key",
+            "the per-request apiKey rode the Authorization header"
         );
     }
 

@@ -113,7 +113,11 @@ mod tests {
 
     #[async_trait]
     impl ObjectStore for OkFake {
-        async fn op(&self, op: StoreOp) -> Result<StoreResult, RunError> {
+        async fn op(
+            &self,
+            op: StoreOp,
+            _timeout: Option<crate::model::Milliseconds>,
+        ) -> Result<StoreResult, RunError> {
             match op {
                 StoreOp::Get { .. } => Ok(StoreResult::Get {
                     body: b"obj".to_vec(),

@@ -272,8 +272,11 @@ pub enum StoreResult {
 #[must_use = "an ObjectStore is a port handle; dropping it discards a wired capability"]
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
-    /// Perform `op`. A remote/host failure is a typed [`RunError`].
-    async fn op(&self, op: StoreOp) -> Result<StoreResult, RunError>;
+    /// Perform `op`, bounding the request by the per-task `timeout` when set (the same
+    /// cancellation contract `exec`/`run`/`fetch` honour — a breach is a typed `task_timeout`
+    /// [`RunError`]). A remote/host failure is likewise a typed [`RunError`].
+    async fn op(&self, op: StoreOp, timeout: Option<Milliseconds>)
+    -> Result<StoreResult, RunError>;
 }
 
 /// A chat-completion request — the `ChatRequest` sketch for `chat-completion` and the `llmRubric`
@@ -288,6 +291,12 @@ pub struct ChatRequest {
     pub temperature: Option<f64>,
     /// The maximum tokens to generate, when set.
     pub max_tokens: Option<u32>,
+    /// Per-request ChatCompletions endpoint override (the task's / scorer's `apiUrl`); when unset,
+    /// the adapter's composed default endpoint is used.
+    pub api_url: Option<String>,
+    /// Per-request API key override (the task's / scorer's `apiKey`); when unset, the adapter's
+    /// composed default key is used.
+    pub api_key: Option<String>,
 }
 
 /// A chat-completion response — the `ChatResponse` sketch.

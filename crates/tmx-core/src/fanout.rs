@@ -28,7 +28,9 @@ use tmx_schema::limits::{
 };
 use tmx_schema::task::{EvalWith, ExecWith, MapWith, RunWith, Scorer, TaskWith};
 
-use crate::dispatch::{build_exec_spec, build_run_spec, interp_value, split_args};
+use crate::dispatch::{
+    build_exec_spec, build_run_spec, interp_to_string, interp_value, split_args,
+};
 use crate::error::RunError;
 use crate::matcher::MatcherEngine;
 use crate::model::{EvalCase, EvalSummary, Scope, Scorecard};
@@ -588,6 +590,19 @@ async fn score_one(
                 Some(r) => value_to_text(&interp_value(&Value::String(r.clone()), case_scope)?),
                 None => String::new(),
             };
+            // Route the judge call to the scorer's configured endpoint/key when set (interpolated —
+            // an `apiKey` typically references a context secret); absent, the adapter's composed
+            // default is used.
+            let api_url = scorer
+                .api_url
+                .as_deref()
+                .map(|u| interp_to_string(u, case_scope))
+                .transpose()?;
+            let api_key = scorer
+                .api_key
+                .as_deref()
+                .map(|k| interp_to_string(k, case_scope))
+                .transpose()?;
             let request = ChatRequest {
                 model,
                 messages: vec![
@@ -606,6 +621,8 @@ async fn score_one(
                 ],
                 temperature: None,
                 max_tokens: None,
+                api_url,
+                api_key,
             };
             let response = chat.complete(request).await?;
             unit_score(parse_score(&response.content)).ok_or_else(|| {

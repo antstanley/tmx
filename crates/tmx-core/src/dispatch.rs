@@ -103,7 +103,8 @@ pub async fn dispatch_task<'t>(
         }
         TaskWith::Store(sw) => {
             let op = build_store_op(sw, scope)?;
-            let result = ports.store.op(op).await?;
+            let timeout = sw.timeout.as_ref().and_then(duration_to_ms);
+            let result = ports.store.op(op, timeout).await?;
             Ok(Dispatch::Leaf(store_output(result)))
         }
         TaskWith::ChatCompletion(cw) => {
@@ -217,7 +218,7 @@ pub(crate) fn interp_value(value: &Value, scope: &Scope<'_>) -> Result<Value, Ru
 }
 
 /// Interpolate `s` and coerce the result to a string (a scalar to its text, a compound to JSON).
-fn interp_to_string(s: &str, scope: &Scope<'_>) -> Result<String, RunError> {
+pub(crate) fn interp_to_string(s: &str, scope: &Scope<'_>) -> Result<String, RunError> {
     interp_template(s, scope).map(|v| value_to_str(&v))
 }
 
@@ -586,13 +587,26 @@ fn build_store_op(sw: &StoreWith, scope: &Scope<'_>) -> Result<StoreOp, RunError
 }
 
 /// Build a [`ChatRequest`] for a `chat-completion` task.
+///
+/// The `apiUrl`/`apiKey` overrides are interpolated (an `apiKey` typically references a context
+/// secret, e.g. `${{ secrets.OPENAI_KEY }}`) and threaded onto the request so the adapter targets
+/// the configured endpoint/key; when absent the adapter falls back to its composed default.
 fn build_chat_request(cw: &ChatCompletionWith, scope: &Scope<'_>) -> Result<ChatRequest, RunError> {
-    let _ = scope;
     Ok(ChatRequest {
         model: cw.model.clone(),
         messages: cw.messages.clone(),
         temperature: cw.temperature,
         max_tokens: cw.max_tokens,
+        api_url: cw
+            .api_url
+            .as_deref()
+            .map(|u| interp_to_string(u, scope))
+            .transpose()?,
+        api_key: cw
+            .api_key
+            .as_deref()
+            .map(|k| interp_to_string(k, scope))
+            .transpose()?,
     })
 }
 

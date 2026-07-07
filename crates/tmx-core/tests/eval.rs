@@ -322,3 +322,95 @@ fn a_non_conforming_llm_rubric_response_is_a_run_failure_not_a_zero() {
         "it is a run failure over the judge output, not a static validation error"
     );
 }
+
+#[test]
+fn an_llm_rubric_scorer_routes_its_apiurl_and_interpolated_apikey_to_the_judge() {
+    // O2: the scorer's `apiUrl`/`apiKey` are threaded onto the judge `ChatRequest` so the adapter
+    // targets the configured endpoint/key. `apiKey` is interpolated (it typically references a
+    // context secret), proven here by resolving it from `inputs`.
+    let inputs = json!({ "key": "sk-live-123" });
+    let empty = Value::Object(serde_json::Map::new());
+    let scope = Scope {
+        inputs: &inputs,
+        ..empty_scope(&empty)
+    };
+    let chat = FakeChatModel::new().with_completion("0.9");
+    let process = RecordingProcessRunner::new();
+    let eval = eval_with(json!({
+        "subject": { "type": "exec", "with": { "command": "echo" } },
+        "scorers": [{
+            "name": "judge",
+            "type": "llmRubric",
+            "model": "gpt-x",
+            "rubric": "grade it",
+            "apiUrl": "https://judge.example/v1/chat/completions",
+            "apiKey": "${{ inputs.key }}"
+        }],
+    }));
+    let out = block_on_ready(run_eval(
+        &eval,
+        "judged",
+        &scope,
+        &SerialScheduler::new(),
+        &chat,
+        &process,
+        CONCURRENCY_MAX,
+        0,
+        |_i, _case, _d| async move { Ok(json!("the graded output")) },
+    ))
+    .expect("the judged eval runs");
+    assert!(
+        out.get("passed").is_some(),
+        "the eval emits a scorecard: {out}"
+    );
+
+    let requests = chat.requests();
+    assert_eq!(requests.len(), 1, "the judge model was called exactly once");
+    assert_eq!(
+        requests[0].api_url.as_deref(),
+        Some("https://judge.example/v1/chat/completions"),
+        "the scorer's apiUrl routes the judge call to the configured endpoint"
+    );
+    assert_eq!(
+        requests[0].api_key.as_deref(),
+        Some("sk-live-123"),
+        "the scorer's apiKey is interpolated from inputs and threaded onto the request"
+    );
+}
+
+#[test]
+fn an_llm_rubric_scorer_without_apiurl_leaves_the_composed_default() {
+    // O2 companion (negative space): absent `apiUrl`/`apiKey`, the judge request carries no
+    // override, so the adapter falls back to its composed default endpoint/key (today's behaviour).
+    let empty = Value::Object(serde_json::Map::new());
+    let scope = empty_scope(&empty);
+    let chat = FakeChatModel::new().with_completion("0.8");
+    let process = RecordingProcessRunner::new();
+    let eval = eval_with(json!({
+        "subject": { "type": "exec", "with": { "command": "echo" } },
+        "scorers": [{ "name": "judge", "type": "llmRubric", "model": "gpt-x", "rubric": "grade" }],
+    }));
+    block_on_ready(run_eval(
+        &eval,
+        "judged",
+        &scope,
+        &SerialScheduler::new(),
+        &chat,
+        &process,
+        CONCURRENCY_MAX,
+        0,
+        |_i, _case, _d| async move { Ok(json!("out")) },
+    ))
+    .expect("the default-endpoint eval runs");
+
+    let requests = chat.requests();
+    assert_eq!(requests.len(), 1, "the judge model was called once");
+    assert_eq!(
+        requests[0].api_url, None,
+        "no apiUrl override is threaded, so the adapter uses its default endpoint"
+    );
+    assert_eq!(
+        requests[0].api_key, None,
+        "no apiKey override is threaded, so the adapter uses its default key"
+    );
+}
