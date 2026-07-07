@@ -39,7 +39,8 @@ call. It is generic over the port bundle so tests inject fakes.
       `change`. Continue to the next task.
    2. **Resolve context.** Merge the inherited (folder/Flow) context with the task's `context` per
       `contextStrategy` (`merge`/`replace`) and `contextPrecedence` (`local`/`inherited`), each
-      section (`env`/`secrets`/`hooks`) independently.
+      section (`env`/`secrets`) independently. (Hooks are not merged per task — the `HookRunner` is
+      built once from the Flow context at run entry; see [hooks](#lifecycle-hooks).)
    3. **Resolve `with`.** Interpolate every `${{ }}` in the task config against the scope. Secret
       references resolve to **unmasked** values **only** for the names in `task.secrets`; every
       resolved secret value is registered with the [Masker](#secrets--masking) as sensitive.
@@ -173,8 +174,9 @@ the **canonical-JSON byte length** (UTF-8, no insignificant whitespace), tracked
 each merge — reproducible across hosts, unlike an in-memory estimate. A merge that would exceed it
 **aborts the run** (`RunFailure`, `code: state_cap_exceeded`) naming the offending task, rather than
 growing without limit. `{ "blob": … }` outputs and large `map`/`eval` result arrays count toward the
-cap. The cap is raised via `--max-state-size`, the `limits.maxStateSize` config key, or
-`TMX_MAX_STATE_SIZE`. There is **no spill-to-disk / external `Blob` port** in v0 — an explicit,
+cap. **512 MiB is a hard ceiling**: `--max-state-size`, the `limits.maxStateSize` config key, and
+`TMX_MAX_STATE_SIZE` can only **lower** the cap (a configured value above the ceiling is clamped down
+to it), never raise it. There is **no spill-to-disk / external `Blob` port** in v0 — an explicit,
 visible, asserted limit is preferred over silent external storage.
 
 ---

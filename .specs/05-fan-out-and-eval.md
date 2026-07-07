@@ -117,7 +117,11 @@ selected by `type`:
 | `exec` / `run` | a command/script emitting a number (`{ "score": 0.9 }` or a bare number) | `ProcessRunner` |
 
 Common to all: `name`, optional `actual` (defaults to `${{ output }}`; must be set explicitly when
-the `eval` has no `subject`), `weight` (default 1, `> 0`).
+the `eval` has no `subject`), `weight` (default 1, `> 0`), and an optional per-scorer `threshold`.
+That per-scorer `threshold` is **advisory only** — it is carried in the schema but the eval engine
+never reads it: a case's `passed` is decided solely by the case-level `passScore` (see [`eval`](#eval--measurement)),
+and the run is gated solely by the task-level `threshold.metric`. An individual scorer's `threshold`
+gates nothing.
 The `matcher` scorer reuses the **same matcher vocabulary as `assert`** — matchers are the shared
 primitive; `assert` consumes them as gates, `eval` as scorers. An `exec`/`run` scorer whose output is
 not a number in `[0,1]` is a `RunFailure` (`code: scorer_bad_output`).
@@ -197,7 +201,7 @@ map task                                   eval task
   `passRate` has a defined meaning even when the gating metric is `mean`/`weightedMean`.
 - *The summary carries every gateable metric.* **`min` and `p90` are computed and emitted alongside
   `mean`/`weightedMean`/`passRate`/`p50`/`count`; the data-model schema's `evalWith` output
-  description, the [README](../../README.md) scorecard example, and
+  description, the [README](../README.md) scorecard example, and
   [`comparison.md`](../comparison.md) are reconciled to the same list.** Chosen because the
   `evalThreshold` `metric` enum allows gating on any of them — a gateable metric the engine does
   not compute would be unimplementable.

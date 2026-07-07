@@ -59,9 +59,14 @@ out of scope in v0. The `ReferenceResolver` port:
 
 - Resolves a path relative to the referring document's directory.
 - Loads and `kind`-dispatches the target via `SourceLoader`.
-- Tracks the resolution chain to detect **cyclic `flow` imports**, returning a `ResolutionError`
-  rather than recursing forever. (The runtime depth bound `FLOW_DEPTH_MAX` is a second backstop at
-  execution time — see [04](04-execution-engine.md#bounded-flow-recursion).)
+
+Preflight's resolver chases the `environment` / `context` / hook references a Flow inlines; it does
+not walk `flow`-type task imports. **Cyclic `flow` imports on the run path are caught by the
+`FLOW_DEPTH_MAX` depth bound at execution time** — a cyclic import recurses until it trips the depth
+cap, a typed error (see [04](04-execution-engine.md#bounded-flow-recursion)) — rather than by
+chain-membership tracking in the resolver. Explicit chain-tracking cyclic-import detection is a
+`lint`-time check (below), which reports a `cyclic_flow_import` diagnostic when a `use` reference
+resolves back to a source already on the import chain.
 
 The one v0 registry is the local provider map populated by `tmx provider add` (a name → path
 mapping), not a remote namespace.
@@ -88,7 +93,7 @@ A standalone task file (any name) is likewise validated, then wrapped into a one
 ## Validation
 
 `SchemaValidator` checks every artifact against the data-model schema (Draft 2020-12), `kind`-
-dispatched — the same dispatch as [`scripts/validate.sh`](../../scripts/validate.sh), now in-process.
+dispatched — the same dispatch as [`scripts/validate.sh`](../scripts/validate.sh), now in-process.
 This backs `tmx validate` and runs inside preflight. A failure produces one or more `Diagnostic`s and
 a `ValidationError`; in a directory run, **a single malformed task aborts the whole run before any
 task executes** (the half-run folder is the failure mode preflight exists to prevent).
@@ -106,12 +111,14 @@ must carry a non-empty `name` (the map form's keys supply it) — a nameless tas
 `ValidationError` (`missing_task_name`) — and duplicate task names are a `ResolutionError` during
 desugaring (see [01](01-domain-model.md#id-scheme)).
 
-Newer-spec tolerance is settled **here, at validation**, not deferred to dispatch: the validator
-runs in a relaxed mode that accepts the constructs it knows and flags any it does not. A Flow whose
-features imply a **newer** spec version draws the compatibility warning at this point (on stderr,
-per [`CLI.md`](../CLI.md#spec-version-compatibility)); a construct the CLI cannot interpret — an
-unknown task `type`, field, or `with` shape — is then a `ValidationError` (exit 3) raised in
-preflight, before any task runs, rather than a surprise when the dispatcher reaches it.
+Unknown constructs are rejected **here, at validation**, not deferred to dispatch: a construct the
+CLI cannot interpret — an unknown task `type`, field, or `with` shape — is a `ValidationError`
+(exit 3) raised in preflight, before any task runs, rather than a surprise when the dispatcher
+reaches it.
+
+> **Not implemented — no spec-version gate.** There is no relaxed schema mode and no version bound:
+> the build reports its supported spec version through `tmx version`, but a Flow is not matched
+> against a spec version and no newer-spec compatibility warning is emitted at preflight.
 
 ### `lint` (static analysis beyond schema)
 
@@ -134,10 +141,12 @@ preflight, before any task runs, rather than a surprise when the dispatcher reac
 ## Capability check
 
 The final preflight step. The engine computes the set of ports the Flow will touch — from the task
-`type`s used and the `environment`'s provider, recursing into `map`/`eval` inner tasks, `eval`
-scorer kinds (`llmRubric` → `ChatModel`, `exec`/`run` → `ProcessRunner`), lifecycle hook bodies, and
-provider method bodies — and verifies each **bound adapter is present and real**, not a stub or
-denying adapter.
+`type`s used, recursing into `map`/`eval` inner tasks, `eval` scorer kinds (`llmRubric` →
+`ChatModel`, `exec`/`run` → `ProcessRunner`), and lifecycle hook bodies (the context's hooks and the
+environment's `bootstrap`) — and verifies each **bound adapter is present and real**, not a stub or
+denying adapter. A declared `environment` provider requires the `EnvironmentProvider` port itself;
+the check gates on the provider block's presence and does **not** recurse into the provider's own
+method bodies.
 
 ```
 CapabilitySet = { ports required by the flow }
@@ -162,7 +171,7 @@ target (file | dir | name)
   SourceLoader.parse ──▶ JSON model ──▶ kind dispatch
         │
         ▼
-  ReferenceResolver  (env/context/flow refs; cycle check; v0 = file paths)
+  ReferenceResolver  (env/context/hook refs; v0 = file paths)
         │
         ▼
   directory assembly + desugar (map form, exec shorthand) ──▶ ordered Vec<Task>
@@ -215,12 +224,12 @@ to the model in `tmx-schema`. The use cases `ValidateArtifacts`, `LintFlow`, and
   case-sensitive, locale-independent), with maximal runs of ASCII digits compared as unsigned
   integers.** Chosen so directory runs are reproducible across hosts — locale-aware collation
   would make task order host-dependent.
-- _Newer-spec tolerance is resolved at validation._ **A Flow whose features imply a newer spec is
-  handled in a relaxed schema mode at preflight: the compatibility warning is emitted early, at
-  validation, and an unknown construct (task `type`, field, or `with` shape) is a `ValidationError`
-  (exit 3) there — not a dispatch-time discovery.** Chosen per
-  [`CLI.md` spec-version compatibility](../CLI.md#spec-version-compatibility), consistent with the
-  other "fail fast in preflight, before side effects" decisions above.
+- _Unknown constructs fail fast at validation._ **An unknown construct (task `type`, field, or
+  `with` shape) is a `ValidationError` (exit 3) at preflight — not a dispatch-time discovery.**
+  Consistent with the other "fail fast in preflight, before side effects" decisions above. There is
+  **no spec-version gate**: the supported spec version is reported by `tmx version`, but a Flow is
+  not matched against a version bound and no newer-spec compatibility warning is emitted (a
+  relaxed-mode compatibility warning is deferred, not implemented).
 
 **Open questions**
 

@@ -9,7 +9,7 @@ scorecards, events, diagnostics — defined by [`canonical-types.schema.json`](c
 because the data-model schema declares it out of scope ([`SCHEMA.md` decision 6](../SCHEMA.md#design-decisions-interpretations-of-the-readme)).
 
 This page maps both halves onto Rust types. It does not re-teach the model — see the
-[README](../../README.md) and [`SCHEMA.md`](../SCHEMA.md) for what each field means.
+[README](../README.md) and [`SCHEMA.md`](../SCHEMA.md) for what each field means.
 
 ---
 
@@ -36,12 +36,17 @@ before execution as a backstop (see [Invariants](04-execution-engine.md#invarian
 ## Input entities (the static Flow — `tmx-schema`)
 
 These mirror the `$defs` in [`tmx.schema.json`](../tmx.schema.json) one-for-one. They derive
-`serde::Deserialize`; `tmx-schema` owns them and nothing in this crate performs I/O.
+`serde::Deserialize`; `tmx-schema` owns them and nothing in this crate performs I/O. Most are
+deserialise-only, but `Environment` and `Resources` additionally derive `serde::Serialize` because a
+resolved environment is written to a `BinaryProvider` on stdin (see
+[06](06-ports-and-adapters.md#environment-and-provider-execution)). Each input entity also carries
+an optional `kind: Option<String>` artifact discriminator — the constant `"flow"` / `"task"` /
+`"context"` / `"environment"` a standalone file names itself with.
 
 ### `Flow`
 
-The only top-level document. Optional `name`, `description`, `version`, `environment`, `context`,
-`inputs`; required `tasks`. `environment` and `context` are each `Inline(Box<…>) | Reference(String)`.
+The only top-level document. Optional `kind`, `name`, `description`, `version`, `environment`,
+`context`, `inputs`; required `tasks`. `environment` and `context` are each `Inline(Box<…>) | Reference(String)`.
 
 - `tasks: Tasks` — an ordered array **or** a name-keyed map (see [`Tasks`](#tasks)).
 - `inputs: Map<String, InputSpec>` — declared inputs; each has optional `type`, `description`,
@@ -49,7 +54,7 @@ The only top-level document. Optional `name`, `description`, `version`, `environ
 
 ### `Task`
 
-The common envelope plus a typed `with`. Fields: `name?`, `description?`, `type` (required), `if?`,
+The common envelope plus a typed `with`. Fields: `kind?`, `name?`, `description?`, `type` (required), `if?`,
 `secrets?`, `context?` + `context_strategy` + `context_precedence`, `output?`, `produces?`,
 `continue_on_error`, and `with`. `with` is an enum discriminated by `type`:
 
@@ -84,9 +89,11 @@ the schema's "runs in the source document's key order" rule. A `Shorthand(String
 
 ### `Context`, `Environment`, `InputSpec`, supporting types
 
-`Context` = `env`, `secrets`, `hooks` (`create`/`change`/`destroy`/`error`). `Environment` is an
-**open** object (`#[serde(flatten)] extra: Map<String, Value>`) carrying provider-specific keys plus
-an `options` block, mirroring the schema's `additionalProperties: true`. `Duration` is
+`Context` = `kind`, `env`, `secrets`, `hooks` (`create`/`change`/`destroy`/`error`). `Environment`
+carries `kind` plus provider keys and is an **open** object
+(`#[serde(flatten)] extra: Map<String, Value>`) carrying provider-specific keys plus an `options`
+block, mirroring the schema's `additionalProperties: true`. Each entity's `kind` is the optional
+artifact discriminator described above. `Duration` is
 `Seconds(u64) | Spec(String)` (e.g. `"30s"`), normalised to `Milliseconds` at resolution time.
 
 ---
@@ -206,8 +213,9 @@ does (see [03](03-loading-and-preflight.md#lint-static-analysis-beyond-schema)).
 
 **Decisions**
 
-- _Two-crate split for the model._ **Input types live in `tmx-schema` (deserialise-only, no I/O);
-  runtime types live in `tmx-core`.** Chosen so the data model can be reused (e.g. by a future
+- _Two-crate split for the model._ **Input types live in `tmx-schema` (no I/O — deserialise-only,
+  save for `Environment`/`Resources`, which also serialise for provider stdin); runtime types live in
+  `tmx-core`.** Chosen so the data model can be reused (e.g. by a future
   language-server or validator) without pulling in the execution engine, and so the runtime contract
   has a single owner.
 - _Boxed recursive `with`._ **`MapWith`/`EvalWith` box their embedded `Task`.** Required for a sized

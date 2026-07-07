@@ -33,8 +33,9 @@ Every command is a thin call into a driving-port use case in `tmx-core::ports::d
 | `tmx version` / `tmx help` | — (CLI-local) | prints CLI + supported spec version |
 
 The surface is **hybrid**: high-frequency actions are flat primaries (`run`, `validate`, `lint`,
-`init`, `fmt`, `inspect`) and resource areas are noun groups (`env`, `provider`, `runs`). A primary is
-sugar for its long form (`tmx run` ≡ `tmx flow run`; both always work).
+`init`, `fmt`, `inspect`) and resource areas are noun groups (`env`, `provider`, `runs`). Only these
+flat spellings exist in the `Command` enum: there is **no `flow` noun-group**, so `tmx run` is the
+sole spelling of a run — no `tmx flow run` alias is implemented.
 
 ---
 
@@ -108,8 +109,8 @@ Resolved highest-to-lowest (the composition root reads this before constructing 
    `TMX_NO_COLOR`, `TMX_MAX_STATE_SIZE`, `TMX_RUNS_RETENTION`; inputs via `TMX_INPUT_<NAME>`
 3. **Project config** — `tmx.config.{toml,yaml,json,jsonc}` in the project root: flag defaults,
    registered-name → path mappings, the provider registry, named profiles
-4. **User config** — `~/.config/tmx/config.toml`
-5. **System config** — `/etc/tmx/config.toml`
+4. **User config** — the same `tmx.config.*` in `~/.config/tmx/`
+5. **System config** — the same `tmx.config.*` in `/etc/tmx/`
 
 `config.rs` resolves the layers into one effective config struct; `compose.rs` consumes it.
 

@@ -74,6 +74,15 @@ The `Event` shape is in [`canonical-types.schema.json`](canonical-types.schema.j
 `--format` selects the stdout reporter; stderr progress is independent. **Every event and final-state
 payload passes through the Masker before emission** — the structural masking guarantee below.
 
+**Diagnostics are not stream events.** A [`Diagnostic`](canonical-types.schema.json) (severity
+`error`/`warning`/`info`) is the emit-only finding produced by `validate` and `lint` and by a
+warn-mode `--check-produces` mismatch — a separate record, not one of the eleven `Event` variants.
+The runner never routes a finding onto the canonical stream; the driving adapter surfaces it on the
+reporter's **stderr channel and exit code** (`main` prints `<severity>: <message> [<code>]` and maps a
+blocking finding to exit `3` for `lint`, or fails the task under `--check-produces=strict`). A
+bare `--check-produces` (warn) validates the output but is non-blocking: the mismatch is reported on
+stderr and the run continues.
+
 ---
 
 ## Masking at the boundary

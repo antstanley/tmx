@@ -12,11 +12,13 @@ principles there.
 The pillars: **adopt Tiger Style**, **validate at every boundary**, **bound everything with a named
 constant**, **assert invariants in release**, **keep the core pure**, **leave zero technical debt**.
 
-> The Rust toolchain described below is the **intended** toolchain for the implementation; no Rust
-> code exists yet (the repo is a pre-runtime spec). The only enforcement wired today is the schema
-> validation in [`scripts/validate.sh`](../../scripts/validate.sh) and the jj/git pre-push gate. The
-> Rust gates (`fmt`/`clippy`/`nextest`) join the pre-push hook as the first crate lands — see
-> [Open questions](#assumptions-and-open-questions).
+> The Rust toolchain described below is **live**. The six-crate workspace (`tmx-schema`, `tmx-core`,
+> `tmx-adapters`, `tmx-testkit`, `tmx-cli`, `tmx-conformance`) exists and builds under the pinned
+> toolchain, and the pre-push gate ([`scripts/gate.sh`](../scripts/gate.sh)) enforces the full tier —
+> `cargo fmt --check`, `cargo clippy -D warnings`, `cargo nextest run`, the dependency-purity check
+> ([`scripts/purity.sh`](../scripts/purity.sh)), and schema validation
+> ([`scripts/validate.sh`](../scripts/validate.sh)) — on every push (see
+> [Version control](#version-control-jujutsu)).
 
 ---
 
@@ -29,7 +31,8 @@ constant**, **assert invariants in release**, **keep the core pure**, **leave ze
 | rustfmt | default channel | `max_width = 100`; runs in CI and pre-push |
 | clippy | latest | `--all-targets --all-features -D warnings`; `clippy.toml` opt-outs each carry a comment |
 | test runner | cargo-nextest | the runner CI runs; `cargo test` for doctests |
-| schema validator | `scripts/validate.sh` (Python) | validates the data-model schemas + examples; the current pre-push gate until `tmx validate` reaches parity |
+| schema validator | `scripts/validate.sh` (Python) | validates the data-model schemas + examples; the schema stage of the pre-push gate, retained until `tmx validate` reaches parity |
+| dependency purity | `scripts/purity.sh` (cargo-tree) | asserts the pure crates (`tmx-schema`, `tmx-core`, `tmx-testkit`) never gain a tokio/reqwest/S3 dependency edge; a gate stage |
 | version control | jujutsu (`jj`) | git backend present; jj is the front end ([Version control](#version-control-jujutsu)) |
 
 ---
@@ -155,16 +158,19 @@ This repo is managed with **Jujutsu (`jj`)** over a Git backend. jj is the front
 
 - **`jj` is the sole front end.** Do not run `git commit` / `git add` / `git status` against the jj
   working copy — the index/working-copy mismatch is exactly what jj removes.
-- **jj does not run Git hooks.** Push with [`scripts/push.sh`](../../scripts/push.sh), which runs the
-  validation gate and then `jj git push`. A plain `git push` (colocated repo / CI) is backstopped by
-  [`.githooks/pre-push`](../../.githooks/pre-push), enabled once with `git config core.hooksPath
-  .githooks`.
+- **jj does not run Git hooks.** Push with [`scripts/push.sh`](../scripts/push.sh), which runs the
+  full gate and then `jj git push`. A plain `git push` (colocated repo / CI) is backstopped by
+  [`.githooks/pre-push`](../.githooks/pre-push), enabled once with `git config core.hooksPath
+  .githooks`. Both invoke the identical [`scripts/gate.sh`](../scripts/gate.sh).
 - **Describe before pushing** (`jj describe`); **feature work on named bookmarks**
   (`jj bookmark create feat/x`); **resolve conflicts in jj** (`jj resolve`), not by editing markers.
 - The `.jj/` directory is local and not committed.
 
-The pre-push gate runs the schema validation today; as crates land it also runs `cargo fmt --check`,
-`cargo clippy -D warnings`, and the fast `nextest` tier. CI re-runs the same plus the slow tier.
+The pre-push gate ([`scripts/gate.sh`](../scripts/gate.sh)) runs the full tier, cheapest-signal-first:
+`cargo fmt --all --check`, `cargo clippy --all-targets --all-features -D warnings`, `cargo nextest
+run` (the whole workspace, including the `tmx-conformance` slow tier), [`scripts/purity.sh`](../scripts/purity.sh)
+(the dependency-purity check), and [`scripts/validate.sh`](../scripts/validate.sh) (schema + examples).
+CI re-runs the identical set.
 
 ---
 
@@ -241,14 +247,17 @@ The pre-push gate runs the schema validation today; as crates land it also runs 
 
 ## Repository hygiene
 
-- **`docs/`** is the canonical home for specs (this set) and the design drafts. Code lives in
-  `crates/`.
+- **`.specs/`** is the canonical home for this spec set. **`docs/`** holds the data-model schema
+  (`tmx.schema.json`, `tmx-provider.schema.json`) and the design drafts (`RUNTIME.md`, `SCHEMA.md`,
+  `CLI.md`, the example corpus). Code lives in `crates/` (the six-crate workspace).
 - **Operator data is gitignored.** The run store at `./.tmx/runs/` is local, untracked; never commit
   it, environment-specific config, or secrets.
-- **The pre-push gate** runs format-check, lint, and the fast test tier (plus the schema validation
-  that exists today). CI re-runs the same plus the slow tier and the golden Flows.
+- **The pre-push gate** ([`scripts/gate.sh`](../scripts/gate.sh)) runs format-check, lint, the full
+  `nextest` workspace run (the `tmx-conformance` golden Flows and limit-boundary trios included —
+  they drive the deterministic testkit fakes, not real backends, so none is `#[ignore]`d in the
+  gate), the dependency-purity check, and schema validation. CI re-runs the identical set.
 - **Generated artifacts are checked in** and grep-able; a CI job regenerates and fails on drift. The
-  example corpus parity check ([`scripts/validate_examples.py`](../../scripts/validate_examples.py))
+  example corpus parity check ([`scripts/validate_examples.py`](../scripts/validate_examples.py))
   is the existing instance.
 
 ---
@@ -334,8 +343,10 @@ A change is done when:
 
 **Open questions**
 
-- *Rust toolchain not yet wired.* No crate, `Cargo.toml`, `rust-toolchain.toml`, `clippy.toml`, or
-  `nextest` config exists — the repo is a pre-runtime spec. The toolchain rows and the fmt/clippy/test
-  pre-push gates are the *intended* setup; they become body-true (and the
-  [`scripts/validate.sh`](../../scripts/validate.sh) gate extends to call them) as the first crate
-  lands. Until then they are the plan, recorded here.
+- *None outstanding.* The Rust toolchain is wired: the six-crate workspace builds under
+  `rust-toolchain.toml` (channel 1.96.1), the workspace `Cargo.toml` declares `rust-version = "1.96.1"`,
+  edition 2024, and the `[workspace.lints]` denials (`unsafe_code`/`unused_must_use`/`unwrap_used`/
+  `expect_used`), `clippy.toml` and `rustfmt.toml` (`max_width = 100`) are in place, and the
+  fmt/clippy/nextest/purity/schema stages all run in [`scripts/gate.sh`](../scripts/gate.sh). What
+  remains is the ongoing `tmx validate` parity work tracked in the Toolchain table, not a toolchain
+  gap.

@@ -119,9 +119,9 @@ ours. The adopted rule:
 ## 3. Rust conventions
 
 - **Edition 2024**, stable toolchain pinned via `rust-toolchain.toml`. MSRV declared and tested.
-- **Errors are typed, never stringly.** The core returns a `RunError` enum carrying an
-  [`ErrorCategory`](canonical-types.schema.json); the CLI adapter is the only code that maps a
-  category to an exit code. `thiserror` for the error enums; **`anyhow` is not used in the core or
+- **Errors are typed, never stringly.** The core returns a `RunError` struct (fields `category`,
+  `code`, `message`, `task`, `path`) carrying an [`ErrorCategory`](canonical-types.schema.json)
+  enum; the CLI adapter is the only code that maps a category to an exit code. `thiserror` for the error enums; **`anyhow` is not used in the core or
   adapters** (it erases the category the exit-code mapping depends on). The CLI may use `anyhow` only
   at the outermost `main` seam, after the category has been extracted.
 - **No `unwrap()` / `expect()` / `panic!` in non-test code**, except an asserted-impossible case with

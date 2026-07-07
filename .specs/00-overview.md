@@ -2,8 +2,8 @@
 
 **Status:** Draft · **Date:** 2026-05-31 · **Owner:** Ant Stanley · **Scope:** Repo-wide
 
-> **No runtime exists yet.** TMX is an early-stage spec (see [`../../README.md`](../../README.md)).
-> This `docs/specs/` set is the **formal implementation specification** for the Rust runtime and
+> **No runtime exists yet.** TMX is an early-stage spec (see [`../README.md`](../README.md)).
+> This `.specs/` set is the **formal implementation specification** for the Rust runtime and
 > CLI that the data-model schema and the language-neutral design drafts imply. It commits the two
 > decisions those drafts left open — **host language: Rust**, **development style: Tiger Style** —
 > and renders the design as concrete crates, traits, types, limits, and algorithms. Like the
@@ -98,9 +98,19 @@ core reaches the world only through **driven ports**, each with one built-in ada
 - **`tmx-schema`** — the data-model types (`Flow`, `Task`, `Context`, `Environment`, …) deserialised
   from the JSON model, plus the limits constants.
 - **`tmx-adapters`** — one built-in adapter per driven port; this is where `tokio`, `reqwest`, the
-  S3 SDK, and process spawning live.
+  S3-signing edge, and process spawning live. The effecting adapters are **Cargo-feature-gated**:
+  `process`, `http`, and `fs` are on by default; `store` and `chat` are opt-in. When `store` or
+  `chat` is off, the composition root wires the port to a **denying stub** (`DenyingObjectStore` /
+  `DenyingChatModel`) that fails closed, so a minimal build carries no S3 or chat I/O edge.
 - **`tmx-cli`** — the `tmx` binary: the driving adapter, the composition root, and the only place
   that maps core error categories to process exit codes.
+
+Two test-only crates sit outside the production hexagon:
+
+- **`tmx-testkit`** — the in-memory fake adapters (serial scheduler, fixed clock/ids, recording I/O)
+  that keep the whole engine unit-testable; it stays inside the same purity boundary as the core.
+- **`tmx-conformance`** — the workspace-level golden-Flow conformance suite: golden Flows over the
+  recorded fakes, limit-boundary and negative-space cases, and the property-test tier.
 
 See [02-crate-architecture.md](02-crate-architecture.md) for the concrete workspace.
 
@@ -149,7 +159,7 @@ See [02-crate-architecture.md](02-crate-architecture.md) for the concrete worksp
   [`tmx-provider.schema.json`](../tmx-provider.schema.json)) at spec version **0.2.0** are the input
   contract; this implementation spec does not change them.
 - The reader of these pages knows the TMX model (Flow / Pipeline / Task / Context / Environment /
-  Provider) from the [README](../../README.md); the specs do not re-teach it.
+  Provider) from the [README](../README.md); the specs do not re-teach it.
 
 **Decisions**
 
@@ -158,7 +168,7 @@ See [02-crate-architecture.md](02-crate-architecture.md) for the concrete worksp
   banner.** This matches the existing [`CLI.md`](../CLI.md)/[`RUNTIME.md`](../RUNTIME.md) drafts,
   which do the same. A future "Implemented" status flip happens per page as code lands; divergence
   between a page and the code is then a real defect to flag, per the spec discipline.
-- _Specs are canonical; drafts are rationale._ **`docs/specs/` is the authoritative Rust + Tiger
+- _Specs are canonical; drafts are rationale._ **`.specs/` is the authoritative Rust + Tiger
   Style blueprint; [`CLI.md`](../CLI.md)/[`RUNTIME.md`](../RUNTIME.md)/[`SCHEMA.md`](../SCHEMA.md)
   are kept as the language-neutral design rationale (the "why").** The specs state the Rust "what"
   and link back to the drafts rather than restating their prose.
